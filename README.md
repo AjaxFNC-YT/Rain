@@ -20,7 +20,7 @@ You need your own API key from one of these:
 
 Keys are stored in your browser and only sent to the provider you pick. OpenRouter, Groq, LM Studio and Ollama work through the OpenAI option with a custom base URL.
 
-No userscript manager? Paste [`dist/rain.console.js`](dist/rain.console.js) into the DevTools console instead. It lasts until you reload.
+The [console build](dist/rain.console.js) runs until you reload and uses the page’s network permissions. IXL blocks direct console requests to Claude with its Content Security Policy. On IXL, install [the userscript](dist/rain.user.js) through your userscript manager, reload the page, and enter your API key in Rain’s setup if prompted. The userscript uses the manager’s request permission and stores its settings separately from the console build.
 
 ## What it does
 

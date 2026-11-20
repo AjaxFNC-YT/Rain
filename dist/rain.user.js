@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rain
 // @namespace    rain
-// @version      1.0.0
+// @version      1.0.1
 // @description  AI school helper for IXL, DeltaMath, iCEV, Khan Academy and Quizlet
 // @author       ajaxfnc
 // @homepageURL  https://github.com/AjaxFNC-YT/Rain
@@ -35,7 +35,7 @@
 const CONFIG = {
   "name": "Rain",
   "namespace": "rain",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "api": {
     "anthropicVersion": "2026-10-21",
     "fallbackBeta": "server-side-fallback-2026-07-01",
@@ -435,7 +435,7 @@ function headerValue(raw, name) {
   return line ? line.slice(name.length + 1).trim() : "";
 }
 
-function request({ url, method = "GET", headers = {}, body, binary = false, signal }) {
+async function request({ url, method = "GET", headers = {}, body, binary = false, signal }) {
   const stopped = () => new RainError("Stopped");
   if (signal?.aborted) return Promise.reject(stopped());
 
@@ -464,17 +464,34 @@ function request({ url, method = "GET", headers = {}, body, binary = false, sign
     });
   }
 
-  return fetch(url, { method, headers, body, signal }).then(
-    async res => ({
+  const destination = new URL(url, document.baseURI);
+  let blocked = false;
+  const onViolation = event => {
+    if (event.disposition !== "enforce" || event.effectiveDirective !== "connect-src") return;
+    if ([destination.href, destination.origin, `${destination.origin}/`].includes(event.blockedURI)) blocked = true;
+  };
+  document.addEventListener("securitypolicyviolation", onViolation);
+  try {
+    let res;
+    try {
+      res = await fetch(url, { method, headers, body, signal });
+    } catch {
+      if (signal?.aborted) throw stopped();
+      if (!blocked) await sleep(100);
+      if (signal?.aborted) throw stopped();
+      if (blocked) {
+        throw new RainError(`This page’s Content Security Policy blocks console requests to ${destination.host}. Install rain.user.js in a userscript manager and reload this page.`);
+      }
+      throw new RainError("Network error. Check the provider URL and your connection. If the site restricts console requests, use rain.user.js.");
+    }
+    return {
       status: res.status,
       type: res.headers.get("content-type") || "",
       body: binary ? await res.arrayBuffer() : await res.text()
-    }),
-    () => {
-      if (signal?.aborted) throw stopped();
-      throw new RainError("Network error. This site may block console requests, try the userscript.");
-    }
-  );
+    };
+  } finally {
+    document.removeEventListener("securitypolicyviolation", onViolation);
+  }
 }
 
 async function copyText(text) {
