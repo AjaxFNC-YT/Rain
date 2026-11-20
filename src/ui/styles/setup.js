@@ -3,48 +3,15 @@ const STYLE_SETUP = `
 
 .r-setup-scroll { display: flex; flex-direction: column; padding: 0 16px 16px; }
 .r-setup-body { flex: 1; display: flex; flex-direction: column; }
-.r-setup-page { margin: auto 0; padding-top: 18px; animation: r-setup-next var(--slow) var(--ease) both; }
+.r-setup-page { padding-top: 22px; animation: r-setup-next var(--slow) var(--ease) both; }
 .r-setup-body[data-dir="back"] .r-setup-page { animation-name: r-setup-back; }
 .r-setup-page > h2 { margin: 0 0 6px 2px; font-size: 21px; font-weight: 720; letter-spacing: -.03em; }
 .r-setup-page > p { margin: 0 2px 14px; color: var(--muted); }
 .r-setup-page > .r-section:first-of-type { margin-top: 4px; }
-.r-setup-small { font-size: 12.5px; color: var(--faint) !important; }
 
-.r-setup-mark {
-  display: grid;
-  place-items: center;
-  width: 52px;
-  height: 52px;
-  margin: 0 0 16px 2px;
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  color: var(--accent);
-  animation: r-drop 600ms var(--ease) both;
-}
-.r-setup-mark svg { width: 26px; height: 26px; }
-.r-setup-mark path { fill: currentColor; stroke: none; }
-
-.r-setup-list { display: grid; gap: 8px; margin: 0 0 16px; padding: 0; list-style: none; }
-.r-setup-list li {
-  position: relative;
-  padding: 10px 12px 10px 34px;
-  border-radius: var(--r);
-  background: var(--group);
-  animation: r-in var(--slow) var(--ease) both;
-}
-.r-setup-list li:nth-child(2) { animation-delay: 60ms; }
-.r-setup-list li:nth-child(3) { animation-delay: 120ms; }
-.r-setup-list li::before {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 14px;
-  width: 7px;
-  height: 7px;
-  margin-top: -3.5px;
-  border-radius: 50%;
-  background: var(--accent);
-}
+.r-setup-fact { align-items: baseline; gap: 14px; }
+.r-setup-fact span { flex: none; width: 92px; color: var(--muted); }
+.r-setup-fact b { flex: 1; font-weight: 560; }
 .r-setup-keys { margin: 0 2px 4px; padding: 12px 14px; border-radius: var(--r); background: var(--group); }
 
 .r-setup-foot {

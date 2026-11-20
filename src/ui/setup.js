@@ -29,16 +29,14 @@ function createSetup(app) {
 
   const pages = {
     welcome() {
-      const sites = CONFIG.sites.map(site => site.label);
+      const fact = (label, value) => h("div", { class: "r-row r-setup-fact" }, h("span", { text: label }), h("b", { text: value }));
       return [
-        h("div", { class: "r-setup-mark" }, icon("drop")),
-        h("h2", { text: `Welcome to ${CONFIG.name}` }),
-        h("p", { text: `${CONFIG.name} reads the question you're on and helps you answer it. It works on ${sites.slice(0, -1).join(", ")} and ${sites.at(-1)}.` }),
-        h("ul", { class: "r-setup-list" },
-          h("li", { text: "Bring your own key from Claude, OpenAI or Gemini" }),
-          h("li", { text: "Explain, hint, check or answer any question" }),
-          h("li", { text: "Auto Answer can type, click, drag and submit for you" })),
-        h("p", { class: "r-setup-small", text: "Setup takes about a minute. You can change everything later in Settings." })
+        h("h2", { text: "Let's set up Rain" }),
+        h("p", { text: "It reads the question you're on and helps with it, or answers it for you. Takes about a minute." }),
+        UI.section(null, "Everything here can be changed later in Settings.",
+          fact("Works on", CONFIG.sites.map(site => site.label).join(", ")),
+          fact("You need", "An API key from Claude, OpenAI or Gemini"),
+          h("div", { class: "r-row r-setup-fact" }, h("span", { text: "Show or hide" }), h("b", {}, Keys.parts(Settings.load().keys.toggle).map(part => h("kbd", { text: part })))))
       ];
     },
 
