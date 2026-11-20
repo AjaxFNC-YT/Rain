@@ -1,0 +1,297 @@
+{
+  "name": "Rain",
+  "namespace": "rain",
+  "version": "1.0.0",
+  "description": "AI school helper for IXL, DeltaMath, iCEV, Khan Academy and Quizlet",
+  "author": "ajaxfnc",
+  "repo": "AjaxFNC-YT/Rain",
+  "api": {
+    "anthropicVersion": "2026-10-21",
+    "fallbackBeta": "server-side-fallback-2026-07-01",
+    "maxTokens": 32000,
+    "timeoutMs": 600000,
+    "maxToolRounds": 14
+  },
+  "defaults": {
+    "effort": "medium",
+    "theme": "system",
+    "autoFill": false,
+    "delayMode": "fixed",
+    "delayMs": 1200,
+    "delayMinMs": 800,
+    "delayMaxMs": 2200,
+    "accent": "rain",
+    "autoSubmit": false,
+    "submitDelayMode": "fixed",
+    "submitDelayMs": 1500,
+    "submitDelayMinMs": 1000,
+    "submitDelayMaxMs": 3000,
+    "provider": "anthropic",
+    "density": "comfortable",
+    "memory": "question",
+    "privateMode": false,
+    "sounds": true,
+    "volume": 0.5,
+    "launcher": false,
+    "openOnStart": true,
+    "keys": {
+      "toggle": "Backquote",
+      "auto": "Alt+KeyA",
+      "answer": "Alt+KeyS",
+      "pick": "Alt+KeyQ"
+    },
+    "tweaks": {},
+    "reduceTransparency": false,
+    "accuracyMode": "off",
+    "missChance": 10,
+    "targetScore": 85,
+    "replyStyle": "explain",
+    "island": {
+      "enabled": true,
+      "position": "top",
+      "style": "glass",
+      "detail": "all",
+      "duration": "normal"
+    }
+  },
+  "efforts": [
+    "low",
+    "medium",
+    "high"
+  ],
+  "capture": {
+    "maxImages": 5,
+    "minImageSize": 60,
+    "maxImageSide": 1568,
+    "maxTextLength": 30000
+  },
+  "sites": [
+    {
+      "id": "ixl",
+      "label": "IXL",
+      "hosts": [
+        "ixl.com"
+      ],
+      "match": [
+        "https://*.ixl.com/*"
+      ],
+      "roots": [
+        ".question-and-submission-view",
+        ".practice-question",
+        ".question-component",
+        "#practice",
+        "main"
+      ],
+      "strip": [
+        ".submit-button-container",
+        ".practice-sidebar",
+        ".ixl-practice-crumb",
+        "nav",
+        "footer",
+        ".yui3-sympadfiwidget .hidden",
+        ".secret",
+        "#symPadCursor",
+        "[class*='live-region' i]",
+        "[class*='symPadArea' i]"
+      ],
+      "network": {
+        "problem": "/practice/(pose|cease)",
+        "submit": "/practice/tally"
+      },
+      "done": "^got it$",
+      "next": "^got it$",
+      "submit": "^submit$"
+    },
+    {
+      "id": "khan",
+      "label": "Khan Academy",
+      "hosts": [
+        "khanacademy.org"
+      ],
+      "match": [
+        "https://*.khanacademy.org/*"
+      ],
+      "roots": [
+        "[data-testid='exercise-content']",
+        ".framework-perseus",
+        ".perseus-renderer",
+        "main"
+      ],
+      "strip": [
+        "[data-testid='exercise-footer']",
+        "nav",
+        "footer"
+      ],
+      "submit": "^check( answer)?$"
+    },
+    {
+      "id": "deltamath",
+      "label": "DeltaMath",
+      "hosts": [
+        "deltamath.com"
+      ],
+      "match": [
+        "https://*.deltamath.com/*"
+      ],
+      "roots": [
+        "#mathBlock",
+        "#innerAnswerForm",
+        "#problemPrompt",
+        ".problem-page",
+        "main"
+      ],
+      "strip": [
+        "nav",
+        "footer",
+        ".sidebar",
+        "header",
+        ".navbar"
+      ],
+      "expand": true,
+      "next": "^(next problem|next question|next section|skip|skip problem|new problem|try another)$",
+      "done": "^(next problem|next question|next section)$",
+      "network": {
+        "problem": "/api/student/problemByAssignment",
+        "submit": "/api/student/check_answer"
+      },
+      "submit": "^submit answer$"
+    },
+    {
+      "id": "quizlet",
+      "label": "Quizlet",
+      "hosts": [
+        "quizlet.com"
+      ],
+      "match": [
+        "https://quizlet.com/*"
+      ],
+      "roots": [
+        "[data-testid='Question Card']",
+        "main"
+      ],
+      "strip": [
+        "nav",
+        "footer",
+        "header"
+      ]
+    },
+    {
+      "id": "icev",
+      "label": "iCEV",
+      "hosts": [
+        "icevonline.com",
+        "icev.com"
+      ],
+      "match": [
+        "https://icevonline.com/*",
+        "https://*.icevonline.com/*",
+        "https://icev.com/*",
+        "https://*.icev.com/*"
+      ],
+      "roots": [
+        ".lrn-assess-content",
+        ".lrn_widget",
+        "[class*='question' i][class*='container' i]",
+        "[class*='question' i]",
+        "form",
+        "main",
+        "[role='main']"
+      ],
+      "strip": [
+        "nav",
+        "header",
+        "footer",
+        "aside",
+        "[class*='sidebar' i]",
+        "[class*='progress' i]",
+        "[class*='timer' i]",
+        "[role='toolbar']",
+        ".sr-only",
+        ".lrn_texteditor_charcount",
+        "[class*='wordcount' i]"
+      ],
+      "expand": true,
+      "submit": "^(submit|submit answer|check|check answer|finish)$",
+      "next": "^(next|next question|continue|save (and|&) next)$",
+      "group": ".lrn_widget",
+      "advance": "^next$",
+      "requireGroup": true
+    }
+  ],
+  "ui": {
+    "accents": [
+      {
+        "id": "rain",
+        "dark": "#5aa9e6",
+        "light": "#1f6fb2"
+      },
+      {
+        "id": "moss",
+        "dark": "#7fbf7a",
+        "light": "#3d7a37"
+      },
+      {
+        "id": "amber",
+        "dark": "#e0a84f",
+        "light": "#a8661a"
+      },
+      {
+        "id": "coral",
+        "dark": "#ec7f6a",
+        "light": "#b8432e"
+      },
+      {
+        "id": "slate",
+        "dark": "#a3adb8",
+        "light": "#4d5763"
+      }
+    ],
+    "maxChats": 60
+  },
+  "legacyNamespace": "sch-buddy",
+  "providers": [
+    {
+      "id": "anthropic",
+      "label": "Claude",
+      "baseUrl": "https://api.anthropic.com",
+      "model": "claude-haiku-5-5",
+      "keyHint": "sk-ant-…",
+      "efforts": true,
+      "models": [
+        {
+          "id": "claude-haiku-5-5",
+          "label": "Claude Haiku 5.5",
+          "fallback": false
+        },
+        {
+          "id": "claude-sonnet-5-5",
+          "label": "Claude Sonnet 5.5",
+          "fallback": true
+        },
+        {
+          "id": "claude-opus-5-5",
+          "label": "Claude Opus 5.5",
+          "fallback": true
+        }
+      ]
+    },
+    {
+      "id": "openai",
+      "label": "OpenAI compatible",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-5",
+      "keyHint": "sk-…",
+      "efforts": false,
+      "models": []
+    },
+    {
+      "id": "gemini",
+      "label": "Gemini",
+      "baseUrl": "https://generativelanguage.googleapis.com",
+      "model": "gemini-2.5-flash",
+      "keyHint": "AIza…",
+      "efforts": false,
+      "models": []
+    }
+  ]
+}
