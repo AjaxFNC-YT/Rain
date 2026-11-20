@@ -221,14 +221,20 @@ const Tools = {
   },
 
   async drag_many(root, { moves = [] }) {
-    const lines = [];
-    let done = 0;
-    for (const move of moves) {
-      const outcome = await this.drag_item(Question.root(true)?.el || root, move);
-      if (outcome.ok) done++;
-      lines.push(`${outcome.ok ? "OK" : "FAILED"} "${move.item_text}" to zone ${move.zone}${outcome.ok ? "" : `: ${outcome.content.split("\n")[0]}`}`);
+    const outcomes = new Map();
+    let pending = moves;
+    for (let pass = 0; pass < 2 && pending.length; pass++) {
+      for (const move of pending) outcomes.set(move, await this.drag_item(Question.root(true)?.el || root, move));
+      pending = pending.filter(move => !outcomes.get(move).ok);
+      if (pending.length) await settle(200, 900);
     }
-    return { ok: done > 0, content: `Placed ${done} of ${moves.length}.\n${lines.join("\n")}`, summary: done ? `Placed ${done} item${done === 1 ? "" : "s"}` : null };
+    const done = moves.filter(move => outcomes.get(move).ok).length;
+    const failed = moves.filter(move => !outcomes.get(move).ok)
+      .map(move => `FAILED "${move.item_text}" to zone ${move.zone}: ${outcomes.get(move).content.split("\n")[0]}`);
+    const content = failed.length
+      ? `Placed ${done} of ${moves.length}. Every other move is in place, leave those alone.\n${failed.join("\n")}`
+      : `Placed all ${moves.length}. Everything is in place, no need to check or move anything again.`;
+    return { ok: done > 0, content, summary: done ? `Placed ${done} of ${moves.length} items` : null };
   },
 
   async perform(root, step) {
@@ -331,7 +337,7 @@ const Tools = {
     const wanted = loose(source.label);
     const placed = () => {
       const zoneNow = Autofill.dropZones(Question.root(true)?.el || root)[zone - 1]?.el || target.el;
-      return zoneNow.isConnected && loose(zoneNow.textContent).includes(wanted);
+      return zoneNow.isConnected && loose(visibleText(zoneNow)).includes(wanted);
     };
     const findSource = () => pickLoose(Autofill.draggables(Question.root(true)?.el || root).filter(entry => !target.el.contains(entry.el)), source.label)?.el || source.el;
     const findZone = () => Autofill.dropZones(Question.root(true)?.el || root)[zone - 1]?.el || target.el;

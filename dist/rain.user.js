@@ -867,7 +867,7 @@ const Prompts = {
     "Some sites use custom math boxes. If fill_field leaves a math box looking wrong or empty, rebuild it like a student would: press structure buttons such as fraction or exponent, then use type_keys to type each part and arrow keys to move between parts. Check what the field shows after each step.",
     "Enter only what goes inside each box. If the page already shows a label such as z = or y = right before the box, enter just the expression, for example x - y, never z = x - y. Keep letters in the same case as the question.",
     "If the answer needs more boxes than are shown, press the button that adds them (such as Add value) the right number of times first, then fill every box.",
-    "For questions that ask to put steps or items in order and show an Order list, use reorder once with every item in the right order. For matching, sorting or ordering questions, use drag_item to move each drag item onto the right drop zone. When a page has several blanks or boxes, use drag_many or fill_many to enter all of them in one call. When controls are labeled with parts, each part has its own word bank and items only fit drop zones in the same part.",
+    "For questions that ask to put steps or items in order and show an Order list, use reorder once with every item in the right order. For matching, sorting or ordering questions, use drag_item to move each drag item onto the right drop zone. When a page has several blanks or boxes, use drag_many or fill_many to enter all of them in one call, working out every answer first so one call covers the whole page. Do not move items that a result reports as placed, and only retry the moves it lists as FAILED. When controls are labeled with parts, each part has its own word bank and items only fit drop zones in the same part.",
     "On pages with many blanks, keep the explanation to one short line per part so the reply stays short, and spend the reply on the tool calls.",
     "Choosing an option or entering a value can reveal new fields, dropdowns or graphs. Each action result lists the updated controls when the page changes, so keep going and fill every new part until the whole answer is entered.",
     "Never submit the answer. When finished, reply with one or two short lines naming what you entered. If a needed control is missing, say so instead of guessing."
@@ -1514,7 +1514,7 @@ const Autofill = {
   draggables(root) {
     const ordered = new Set(this.orderLists(root).flatMap(list => list.items.map(item => item.el)));
     return outermost(this.dragCandidates(root).filter(el => ![...ordered].some(item => item === el || item.contains(el) || el.contains(item))))
-      .map(el => ({ el, label: clean(el.innerText || el.textContent) }));
+      .map(el => ({ el, label: visibleText(el) }));
   },
 
   dragCandidates(root) {
@@ -1616,14 +1616,14 @@ function zonesFor(root, items) {
   if (!items.length) return [];
   const inside = el => items.filter(item => el.contains(item));
   const usable = el => !el.closest(`#${HOST_ID}`) && el.getClientRects().length && !items.some(item => item === el || item.contains(el)) && inside(el).length <= 1;
-  const leftover = el => inside(el).reduce((text, item) => text.replace(clean(item.innerText || item.textContent), ""), clean(el.innerText || el.textContent)).trim();
+  const leftover = el => inside(el).reduce((text, item) => text.replace(visibleText(item), ""), visibleText(el)).trim();
   const strongZones = [...root.querySelectorAll(ZONE_SELECTOR)].filter(el => usable(el) && boxSize(el));
   let zones = strongZones.length ? strongZones : [...root.querySelectorAll(DROP_SELECTOR)].filter(el => usable(el) && boxSize(el));
   if (!zones.length) {
     zones = [...root.querySelectorAll("div, td, li, span")].filter(el => usable(el) && boxSize(el) &&
       !leftover(el) && !el.querySelector("input, select, textarea, svg, img, canvas") && looksLikeBox(el));
   }
-  return innermost(zones).map(el => ({ el, label: zoneLabel(el), content: clean(el.innerText || el.textContent).slice(0, 80) }));
+  return innermost(zones).map(el => ({ el, label: zoneLabel(el), content: visibleText(el).slice(0, 80) }));
 }
 
 function orderItems(container) {
@@ -1794,13 +1794,31 @@ const PointerShim = {
   }
 };
 
-const SCREEN_READER_ONLY = ".sr-only, [class*='sr-only' i], [class*='visually-hidden' i], [class*='screenreader' i], [class*='accessibility' i]";
+const SCREEN_READER_ONLY = ".sr-only, [class*='sr-only' i], [class*='sr_only' i], [class*='visually-hidden' i], [class*='visuallyhidden' i], [class*='screenreader' i], [class*='screen-reader' i], [class*='accessibility' i], [class*='offscreen' i], [class*='assistive' i]";
+
+function visibleText(el) {
+  let out = "";
+  const walk = node => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out += node.nodeValue;
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE || node.matches(SCREEN_READER_ONLY) || SKIP_TAGS.has(node.tagName)) return;
+    const style = getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden") return;
+    if (style.position === "absolute" || style.position === "fixed") {
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 2 || rect.height <= 2) return;
+    }
+    for (const child of node.childNodes) walk(child);
+    out += " ";
+  };
+  walk(el);
+  return clean(out) || clean(el.innerText || el.textContent);
+}
 
 function spokenText(el) {
-  if (!el.querySelector(SCREEN_READER_ONLY)) return el.innerText || el.textContent;
-  const copy = el.cloneNode(true);
-  copy.querySelectorAll(SCREEN_READER_ONLY).forEach(node => node.remove());
-  return copy.textContent;
+  return visibleText(el);
 }
 
 function hiddenControl(el) {
@@ -2830,14 +2848,20 @@ const Tools = {
   },
 
   async drag_many(root, { moves = [] }) {
-    const lines = [];
-    let done = 0;
-    for (const move of moves) {
-      const outcome = await this.drag_item(Question.root(true)?.el || root, move);
-      if (outcome.ok) done++;
-      lines.push(`${outcome.ok ? "OK" : "FAILED"} "${move.item_text}" to zone ${move.zone}${outcome.ok ? "" : `: ${outcome.content.split("\n")[0]}`}`);
+    const outcomes = new Map();
+    let pending = moves;
+    for (let pass = 0; pass < 2 && pending.length; pass++) {
+      for (const move of pending) outcomes.set(move, await this.drag_item(Question.root(true)?.el || root, move));
+      pending = pending.filter(move => !outcomes.get(move).ok);
+      if (pending.length) await settle(200, 900);
     }
-    return { ok: done > 0, content: `Placed ${done} of ${moves.length}.\n${lines.join("\n")}`, summary: done ? `Placed ${done} item${done === 1 ? "" : "s"}` : null };
+    const done = moves.filter(move => outcomes.get(move).ok).length;
+    const failed = moves.filter(move => !outcomes.get(move).ok)
+      .map(move => `FAILED "${move.item_text}" to zone ${move.zone}: ${outcomes.get(move).content.split("\n")[0]}`);
+    const content = failed.length
+      ? `Placed ${done} of ${moves.length}. Every other move is in place, leave those alone.\n${failed.join("\n")}`
+      : `Placed all ${moves.length}. Everything is in place, no need to check or move anything again.`;
+    return { ok: done > 0, content, summary: done ? `Placed ${done} of ${moves.length} items` : null };
   },
 
   async perform(root, step) {
@@ -2940,7 +2964,7 @@ const Tools = {
     const wanted = loose(source.label);
     const placed = () => {
       const zoneNow = Autofill.dropZones(Question.root(true)?.el || root)[zone - 1]?.el || target.el;
-      return zoneNow.isConnected && loose(zoneNow.textContent).includes(wanted);
+      return zoneNow.isConnected && loose(visibleText(zoneNow)).includes(wanted);
     };
     const findSource = () => pickLoose(Autofill.draggables(Question.root(true)?.el || root).filter(entry => !target.el.contains(entry.el)), source.label)?.el || source.el;
     const findZone = () => Autofill.dropZones(Question.root(true)?.el || root)[zone - 1]?.el || target.el;

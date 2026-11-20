@@ -109,7 +109,7 @@ const Autofill = {
   draggables(root) {
     const ordered = new Set(this.orderLists(root).flatMap(list => list.items.map(item => item.el)));
     return outermost(this.dragCandidates(root).filter(el => ![...ordered].some(item => item === el || item.contains(el) || el.contains(item))))
-      .map(el => ({ el, label: clean(el.innerText || el.textContent) }));
+      .map(el => ({ el, label: visibleText(el) }));
   },
 
   dragCandidates(root) {
@@ -211,14 +211,14 @@ function zonesFor(root, items) {
   if (!items.length) return [];
   const inside = el => items.filter(item => el.contains(item));
   const usable = el => !el.closest(`#${HOST_ID}`) && el.getClientRects().length && !items.some(item => item === el || item.contains(el)) && inside(el).length <= 1;
-  const leftover = el => inside(el).reduce((text, item) => text.replace(clean(item.innerText || item.textContent), ""), clean(el.innerText || el.textContent)).trim();
+  const leftover = el => inside(el).reduce((text, item) => text.replace(visibleText(item), ""), visibleText(el)).trim();
   const strongZones = [...root.querySelectorAll(ZONE_SELECTOR)].filter(el => usable(el) && boxSize(el));
   let zones = strongZones.length ? strongZones : [...root.querySelectorAll(DROP_SELECTOR)].filter(el => usable(el) && boxSize(el));
   if (!zones.length) {
     zones = [...root.querySelectorAll("div, td, li, span")].filter(el => usable(el) && boxSize(el) &&
       !leftover(el) && !el.querySelector("input, select, textarea, svg, img, canvas") && looksLikeBox(el));
   }
-  return innermost(zones).map(el => ({ el, label: zoneLabel(el), content: clean(el.innerText || el.textContent).slice(0, 80) }));
+  return innermost(zones).map(el => ({ el, label: zoneLabel(el), content: visibleText(el).slice(0, 80) }));
 }
 
 function orderItems(container) {
@@ -389,13 +389,31 @@ const PointerShim = {
   }
 };
 
-const SCREEN_READER_ONLY = ".sr-only, [class*='sr-only' i], [class*='visually-hidden' i], [class*='screenreader' i], [class*='accessibility' i]";
+const SCREEN_READER_ONLY = ".sr-only, [class*='sr-only' i], [class*='sr_only' i], [class*='visually-hidden' i], [class*='visuallyhidden' i], [class*='screenreader' i], [class*='screen-reader' i], [class*='accessibility' i], [class*='offscreen' i], [class*='assistive' i]";
+
+function visibleText(el) {
+  let out = "";
+  const walk = node => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out += node.nodeValue;
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE || node.matches(SCREEN_READER_ONLY) || SKIP_TAGS.has(node.tagName)) return;
+    const style = getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden") return;
+    if (style.position === "absolute" || style.position === "fixed") {
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 2 || rect.height <= 2) return;
+    }
+    for (const child of node.childNodes) walk(child);
+    out += " ";
+  };
+  walk(el);
+  return clean(out) || clean(el.innerText || el.textContent);
+}
 
 function spokenText(el) {
-  if (!el.querySelector(SCREEN_READER_ONLY)) return el.innerText || el.textContent;
-  const copy = el.cloneNode(true);
-  copy.querySelectorAll(SCREEN_READER_ONLY).forEach(node => node.remove());
-  return copy.textContent;
+  return visibleText(el);
 }
 
 function hiddenControl(el) {
