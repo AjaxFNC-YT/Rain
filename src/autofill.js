@@ -6,6 +6,9 @@ const GRAPH_SELECTOR = ".jxgbox, .JXGboard, svg, canvas";
 const DRAG_SELECTOR = "[draggable='true'], [class*='drag' i], [class*='tile' i], [class*='token' i], [class*='chip' i], [aria-grabbed]";
 const DROP_SELECTOR = "[class*='drop' i], [class*='target' i], [class*='slot' i], [class*='zone' i], [class*='bucket' i], [class*='blank' i], [aria-dropeffect]";
 const ZONE_SELECTOR = "[class*='dropzone' i], [class*='drop-zone' i], [class*='drop_zone' i], [class*='droppable' i], [class*='dropTarget' i], [class*='drop-target' i], [class*='bucket' i], [aria-dropeffect]";
+const SORT_SELECTOR = "[class*='sortlist' i], [class*='sort-list' i], [class*='sort_list' i], [class*='orderlist' i], [class*='order-list' i], [class*='sortable' i], [data-sortable], [role='list'][aria-dropeffect]";
+const ORDER_CACHE = new WeakMap();
+const HANDLE_SELECTOR = "[class*='gripper' i], [class*='handle' i], [class*='grip' i], [class*='drag-icon' i]";
 const DRAG_ITEM_SELECTOR = "[draggable='true'], [aria-grabbed], [class*='draggable' i], [class*='btn_drag' i], [class*='btn-drag' i], [role='button'], [role='option']";
 const EDITOR_SELECTOR = ".yui3-sympadfiwidget, [class*='sympadfi' i]";
 const EDITOR_NOISE = [".hidden", ".secret", "#symPadCursor", "[class*='live-region' i]", "[class*='cursor' i]"];
@@ -86,7 +89,30 @@ const Autofill = {
       }));
   },
 
+  orderLists(root, fresh = false) {
+    const cached = ORDER_CACHE.get(root);
+    if (!fresh && cached && performance.now() - cached.at < 60) return cached.lists;
+    const loose = this.dragCandidates(root);
+    const zoned = loose.length > 0 && zonesFor(root, loose).length > 0;
+    const seeds = [
+      ...root.querySelectorAll(SORT_SELECTOR),
+      ...(zoned ? [] : [...root.querySelectorAll(HANDLE_SELECTOR)].map(handle => handle.parentElement?.parentElement)),
+      ...(zoned || loose.length < 2 ? [] : loose.map(el => el.parentElement))
+    ].filter(Boolean);
+    const containers = [...new Set(seeds.flatMap(el => [el, el.parentElement]))]
+      .filter(el => el && root.contains(el) && !el.closest(`#${HOST_ID}`) && !(zoned && loose.some(item => el.contains(item))) && orderItems(el).length >= 2);
+    const lists = innermost(containers).map(el => ({ el, items: orderItems(el).map(item => ({ el: item, label: orderLabel(item) })) }));
+    ORDER_CACHE.set(root, { at: performance.now(), lists });
+    return lists;
+  },
+
   draggables(root) {
+    const ordered = new Set(this.orderLists(root).flatMap(list => list.items.map(item => item.el)));
+    return outermost(this.dragCandidates(root).filter(el => ![...ordered].some(item => item === el || item.contains(el) || el.contains(item))))
+      .map(el => ({ el, label: clean(el.innerText || el.textContent) }));
+  },
+
+  dragCandidates(root) {
     const found = [...root.querySelectorAll(DRAG_SELECTOR)].filter(el => {
       if (el.closest(`#${HOST_ID}`) || !el.getClientRects().length || el.closest(this.choiceSelector)) return false;
       if (!el.matches("[draggable='true'], [aria-grabbed]") && (el.matches(ZONE_SELECTOR) || el.querySelector(ZONE_SELECTOR))) return false;
@@ -96,25 +122,15 @@ const Autofill = {
       return strong || ["grab", "move", "pointer"].includes(getComputedStyle(el).cursor);
     });
     const items = found.filter(el => !found.some(other => other !== el && el.contains(other) && other.matches(DRAG_ITEM_SELECTOR)));
-    return outermost(items).map(el => ({ el, label: clean(el.innerText || el.textContent) }));
+    return outermost(items);
   },
 
   dropZones(root) {
-    const items = this.draggables(root).map(item => item.el);
-    if (!items.length) return [];
-    const inside = el => items.filter(item => el.contains(item));
-    const usable = el => !el.closest(`#${HOST_ID}`) && el.getClientRects().length && !items.some(item => item === el || item.contains(el)) && inside(el).length <= 1;
-    const leftover = el => inside(el).reduce((text, item) => text.replace(clean(item.innerText || item.textContent), ""), clean(el.innerText || el.textContent)).trim();
-    const strongZones = [...root.querySelectorAll(ZONE_SELECTOR)].filter(el => usable(el) && boxSize(el));
-    let zones = strongZones.length ? strongZones : [...root.querySelectorAll(DROP_SELECTOR)].filter(el => usable(el) && boxSize(el));
-    if (!zones.length) {
-      zones = [...root.querySelectorAll("div, td, li, span")].filter(el => usable(el) && boxSize(el) &&
-        !leftover(el) && !el.querySelector("input, select, textarea, svg, img, canvas") && looksLikeBox(el));
-    }
-    return innermost(zones).map(el => ({ el, label: zoneLabel(el), content: clean(el.innerText || el.textContent).slice(0, 80) }));
+    return zonesFor(root, this.draggables(root).map(item => item.el));
   },
 
   actionable(root) {
+    if (this.orderLists(root).length) return true;
     if (this.draggables(root).length) return true;
     if (this.fields(root).length) return true;
     const choices = this.choices(root);
@@ -128,6 +144,7 @@ const Autofill = {
 
   hasControls(root, generic = false) {
     return (!generic && this.fields(root).length > 0) ||
+      this.orderLists(root).length > 0 ||
       this.draggables(root).length > 0 ||
       this.choices(root).length >= 2 ||
       this.graphs(root).length > 0;
@@ -150,6 +167,9 @@ const Autofill = {
     });
     const buttons = [...new Set(pageButtons(root).map(button => button.label))];
     if (buttons.length) lines.push(`- Buttons: ${buttons.slice(0, 16).map(text => `"${text}"`).join(", ")}`);
+    this.orderLists(root).forEach((list, i) => {
+      lines.push(`- Order list ${i + 1}${part(list.el)}: items from top to bottom: ${list.items.map((item, n) => `${n + 1} "${item.label.slice(0, 100)}"`).join(", ")}. Use reorder to arrange it.`);
+    });
     const items = this.draggables(root);
     const zones = items.length ? this.dropZones(root) : [];
     items.forEach((item, i) => {
@@ -186,6 +206,34 @@ const Autofill = {
       : delayMs;
   }
 };
+
+function zonesFor(root, items) {
+  if (!items.length) return [];
+  const inside = el => items.filter(item => el.contains(item));
+  const usable = el => !el.closest(`#${HOST_ID}`) && el.getClientRects().length && !items.some(item => item === el || item.contains(el)) && inside(el).length <= 1;
+  const leftover = el => inside(el).reduce((text, item) => text.replace(clean(item.innerText || item.textContent), ""), clean(el.innerText || el.textContent)).trim();
+  const strongZones = [...root.querySelectorAll(ZONE_SELECTOR)].filter(el => usable(el) && boxSize(el));
+  let zones = strongZones.length ? strongZones : [...root.querySelectorAll(DROP_SELECTOR)].filter(el => usable(el) && boxSize(el));
+  if (!zones.length) {
+    zones = [...root.querySelectorAll("div, td, li, span")].filter(el => usable(el) && boxSize(el) &&
+      !leftover(el) && !el.querySelector("input, select, textarea, svg, img, canvas") && looksLikeBox(el));
+  }
+  return innermost(zones).map(el => ({ el, label: zoneLabel(el), content: clean(el.innerText || el.textContent).slice(0, 80) }));
+}
+
+function orderItems(container) {
+  if (!container.getClientRects().length) return [];
+  const kids = [...container.children].filter(el => el.getClientRects().length && orderLabel(el));
+  if (kids.length < 2 || kids.length > 20) return [];
+  const shape = el => `${el.tagName}.${String(el.className?.baseVal ?? el.className).split(/\s+/)[0]}`;
+  if (kids.some(el => shape(el) !== shape(kids[0]))) return [];
+  if (kids.some(el => el.querySelector("input, select, textarea") || orderLabel(el).length > 240)) return [];
+  return kids;
+}
+
+function orderLabel(el) {
+  return clean(spokenText(el)).replace(/^[^\p{L}\p{N}(\[$"'-]+/u, "");
+}
 
 function questionGroups(root) {
   const selector = Question.site().group;
@@ -868,7 +916,7 @@ function pageButtons(root) {
   const symbols = [...root.querySelectorAll("[class*='symPadButton' i]")];
   const pointer = [...root.querySelectorAll("span, div, label, li, p")]
     .filter(el => el.children.length <= 4 && short(el) && getComputedStyle(el).cursor === "pointer");
-  const drags = Autofill.draggables(root).map(item => item.el);
+  const drags = [...Autofill.draggables(root).map(item => item.el), ...Autofill.orderLists(root).flatMap(list => list.items.map(item => item.el))];
   const found = [...new Set([...direct, ...symbols, ...pointer])].filter(el =>
     !el.closest(`#${HOST_ID}`) && Autofill.available(el) && el.type !== "submit" && short(el) &&
     !drags.some(item => item.contains(el) || el.contains(item)) &&

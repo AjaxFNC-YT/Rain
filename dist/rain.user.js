@@ -867,7 +867,7 @@ const Prompts = {
     "Some sites use custom math boxes. If fill_field leaves a math box looking wrong or empty, rebuild it like a student would: press structure buttons such as fraction or exponent, then use type_keys to type each part and arrow keys to move between parts. Check what the field shows after each step.",
     "Enter only what goes inside each box. If the page already shows a label such as z = or y = right before the box, enter just the expression, for example x - y, never z = x - y. Keep letters in the same case as the question.",
     "If the answer needs more boxes than are shown, press the button that adds them (such as Add value) the right number of times first, then fill every box.",
-    "For matching, sorting or ordering questions, use drag_item to move each drag item onto the right drop zone. When a page has several blanks or boxes, use drag_many or fill_many to enter all of them in one call. When controls are labeled with parts, each part has its own word bank and items only fit drop zones in the same part.",
+    "For questions that ask to put steps or items in order and show an Order list, use reorder once with every item in the right order. For matching, sorting or ordering questions, use drag_item to move each drag item onto the right drop zone. When a page has several blanks or boxes, use drag_many or fill_many to enter all of them in one call. When controls are labeled with parts, each part has its own word bank and items only fit drop zones in the same part.",
     "On pages with many blanks, keep the explanation to one short line per part so the reply stays short, and spend the reply on the tool calls.",
     "Choosing an option or entering a value can reveal new fields, dropdowns or graphs. Each action result lists the updated controls when the page changes, so keep going and fill every new part until the whole answer is entered.",
     "Never submit the answer. When finished, reply with one or two short lines naming what you entered. If a needed control is missing, say so instead of guessing."
@@ -1353,7 +1353,7 @@ const Question = {
   stableText(el, strip) {
     const editable = [...el.querySelectorAll(EDITABLE)].filter(node => clean(node.textContent).length < 200);
     const slots = Autofill.fields(el).map(field => answerSlot(field.el, el));
-    const moved = [...Autofill.draggables(el), ...Autofill.dropZones(el)].map(entry => entry.el);
+    const moved = [...Autofill.draggables(el), ...Autofill.dropZones(el), ...Autofill.orderLists(el)].map(entry => entry.el);
     return Capture.text(el, strip, false, true, [...editable, ...slots, ...moved]).split("\n").map(clean)
       .filter(line => line && !FEEDBACK_LINE.test(line)).join("\n");
   },
@@ -1363,7 +1363,8 @@ const Question = {
       Autofill.fields(el).length,
       Autofill.dropdowns(el).map(dropdown => dropdown.options.length),
       Autofill.choices(el).filter(choice => !choice.option).map(choice => choice.label),
-      Autofill.draggables(el).map(item => item.label).sort()
+      Autofill.draggables(el).map(item => item.label).sort(),
+      Autofill.orderLists(el).map(list => list.items.map(item => item.label).sort())
     ];
     return [this.stableText(el, strip), controls];
   },
@@ -1410,6 +1411,9 @@ const GRAPH_SELECTOR = ".jxgbox, .JXGboard, svg, canvas";
 const DRAG_SELECTOR = "[draggable='true'], [class*='drag' i], [class*='tile' i], [class*='token' i], [class*='chip' i], [aria-grabbed]";
 const DROP_SELECTOR = "[class*='drop' i], [class*='target' i], [class*='slot' i], [class*='zone' i], [class*='bucket' i], [class*='blank' i], [aria-dropeffect]";
 const ZONE_SELECTOR = "[class*='dropzone' i], [class*='drop-zone' i], [class*='drop_zone' i], [class*='droppable' i], [class*='dropTarget' i], [class*='drop-target' i], [class*='bucket' i], [aria-dropeffect]";
+const SORT_SELECTOR = "[class*='sortlist' i], [class*='sort-list' i], [class*='sort_list' i], [class*='orderlist' i], [class*='order-list' i], [class*='sortable' i], [data-sortable], [role='list'][aria-dropeffect]";
+const ORDER_CACHE = new WeakMap();
+const HANDLE_SELECTOR = "[class*='gripper' i], [class*='handle' i], [class*='grip' i], [class*='drag-icon' i]";
 const DRAG_ITEM_SELECTOR = "[draggable='true'], [aria-grabbed], [class*='draggable' i], [class*='btn_drag' i], [class*='btn-drag' i], [role='button'], [role='option']";
 const EDITOR_SELECTOR = ".yui3-sympadfiwidget, [class*='sympadfi' i]";
 const EDITOR_NOISE = [".hidden", ".secret", "#symPadCursor", "[class*='live-region' i]", "[class*='cursor' i]"];
@@ -1490,7 +1494,30 @@ const Autofill = {
       }));
   },
 
+  orderLists(root, fresh = false) {
+    const cached = ORDER_CACHE.get(root);
+    if (!fresh && cached && performance.now() - cached.at < 60) return cached.lists;
+    const loose = this.dragCandidates(root);
+    const zoned = loose.length > 0 && zonesFor(root, loose).length > 0;
+    const seeds = [
+      ...root.querySelectorAll(SORT_SELECTOR),
+      ...(zoned ? [] : [...root.querySelectorAll(HANDLE_SELECTOR)].map(handle => handle.parentElement?.parentElement)),
+      ...(zoned || loose.length < 2 ? [] : loose.map(el => el.parentElement))
+    ].filter(Boolean);
+    const containers = [...new Set(seeds.flatMap(el => [el, el.parentElement]))]
+      .filter(el => el && root.contains(el) && !el.closest(`#${HOST_ID}`) && !(zoned && loose.some(item => el.contains(item))) && orderItems(el).length >= 2);
+    const lists = innermost(containers).map(el => ({ el, items: orderItems(el).map(item => ({ el: item, label: orderLabel(item) })) }));
+    ORDER_CACHE.set(root, { at: performance.now(), lists });
+    return lists;
+  },
+
   draggables(root) {
+    const ordered = new Set(this.orderLists(root).flatMap(list => list.items.map(item => item.el)));
+    return outermost(this.dragCandidates(root).filter(el => ![...ordered].some(item => item === el || item.contains(el) || el.contains(item))))
+      .map(el => ({ el, label: clean(el.innerText || el.textContent) }));
+  },
+
+  dragCandidates(root) {
     const found = [...root.querySelectorAll(DRAG_SELECTOR)].filter(el => {
       if (el.closest(`#${HOST_ID}`) || !el.getClientRects().length || el.closest(this.choiceSelector)) return false;
       if (!el.matches("[draggable='true'], [aria-grabbed]") && (el.matches(ZONE_SELECTOR) || el.querySelector(ZONE_SELECTOR))) return false;
@@ -1500,25 +1527,15 @@ const Autofill = {
       return strong || ["grab", "move", "pointer"].includes(getComputedStyle(el).cursor);
     });
     const items = found.filter(el => !found.some(other => other !== el && el.contains(other) && other.matches(DRAG_ITEM_SELECTOR)));
-    return outermost(items).map(el => ({ el, label: clean(el.innerText || el.textContent) }));
+    return outermost(items);
   },
 
   dropZones(root) {
-    const items = this.draggables(root).map(item => item.el);
-    if (!items.length) return [];
-    const inside = el => items.filter(item => el.contains(item));
-    const usable = el => !el.closest(`#${HOST_ID}`) && el.getClientRects().length && !items.some(item => item === el || item.contains(el)) && inside(el).length <= 1;
-    const leftover = el => inside(el).reduce((text, item) => text.replace(clean(item.innerText || item.textContent), ""), clean(el.innerText || el.textContent)).trim();
-    const strongZones = [...root.querySelectorAll(ZONE_SELECTOR)].filter(el => usable(el) && boxSize(el));
-    let zones = strongZones.length ? strongZones : [...root.querySelectorAll(DROP_SELECTOR)].filter(el => usable(el) && boxSize(el));
-    if (!zones.length) {
-      zones = [...root.querySelectorAll("div, td, li, span")].filter(el => usable(el) && boxSize(el) &&
-        !leftover(el) && !el.querySelector("input, select, textarea, svg, img, canvas") && looksLikeBox(el));
-    }
-    return innermost(zones).map(el => ({ el, label: zoneLabel(el), content: clean(el.innerText || el.textContent).slice(0, 80) }));
+    return zonesFor(root, this.draggables(root).map(item => item.el));
   },
 
   actionable(root) {
+    if (this.orderLists(root).length) return true;
     if (this.draggables(root).length) return true;
     if (this.fields(root).length) return true;
     const choices = this.choices(root);
@@ -1532,6 +1549,7 @@ const Autofill = {
 
   hasControls(root, generic = false) {
     return (!generic && this.fields(root).length > 0) ||
+      this.orderLists(root).length > 0 ||
       this.draggables(root).length > 0 ||
       this.choices(root).length >= 2 ||
       this.graphs(root).length > 0;
@@ -1554,6 +1572,9 @@ const Autofill = {
     });
     const buttons = [...new Set(pageButtons(root).map(button => button.label))];
     if (buttons.length) lines.push(`- Buttons: ${buttons.slice(0, 16).map(text => `"${text}"`).join(", ")}`);
+    this.orderLists(root).forEach((list, i) => {
+      lines.push(`- Order list ${i + 1}${part(list.el)}: items from top to bottom: ${list.items.map((item, n) => `${n + 1} "${item.label.slice(0, 100)}"`).join(", ")}. Use reorder to arrange it.`);
+    });
     const items = this.draggables(root);
     const zones = items.length ? this.dropZones(root) : [];
     items.forEach((item, i) => {
@@ -1590,6 +1611,34 @@ const Autofill = {
       : delayMs;
   }
 };
+
+function zonesFor(root, items) {
+  if (!items.length) return [];
+  const inside = el => items.filter(item => el.contains(item));
+  const usable = el => !el.closest(`#${HOST_ID}`) && el.getClientRects().length && !items.some(item => item === el || item.contains(el)) && inside(el).length <= 1;
+  const leftover = el => inside(el).reduce((text, item) => text.replace(clean(item.innerText || item.textContent), ""), clean(el.innerText || el.textContent)).trim();
+  const strongZones = [...root.querySelectorAll(ZONE_SELECTOR)].filter(el => usable(el) && boxSize(el));
+  let zones = strongZones.length ? strongZones : [...root.querySelectorAll(DROP_SELECTOR)].filter(el => usable(el) && boxSize(el));
+  if (!zones.length) {
+    zones = [...root.querySelectorAll("div, td, li, span")].filter(el => usable(el) && boxSize(el) &&
+      !leftover(el) && !el.querySelector("input, select, textarea, svg, img, canvas") && looksLikeBox(el));
+  }
+  return innermost(zones).map(el => ({ el, label: zoneLabel(el), content: clean(el.innerText || el.textContent).slice(0, 80) }));
+}
+
+function orderItems(container) {
+  if (!container.getClientRects().length) return [];
+  const kids = [...container.children].filter(el => el.getClientRects().length && orderLabel(el));
+  if (kids.length < 2 || kids.length > 20) return [];
+  const shape = el => `${el.tagName}.${String(el.className?.baseVal ?? el.className).split(/\s+/)[0]}`;
+  if (kids.some(el => shape(el) !== shape(kids[0]))) return [];
+  if (kids.some(el => el.querySelector("input, select, textarea") || orderLabel(el).length > 240)) return [];
+  return kids;
+}
+
+function orderLabel(el) {
+  return clean(spokenText(el)).replace(/^[^\p{L}\p{N}(\[$"'-]+/u, "");
+}
 
 function questionGroups(root) {
   const selector = Question.site().group;
@@ -2272,7 +2321,7 @@ function pageButtons(root) {
   const symbols = [...root.querySelectorAll("[class*='symPadButton' i]")];
   const pointer = [...root.querySelectorAll("span, div, label, li, p")]
     .filter(el => el.children.length <= 4 && short(el) && getComputedStyle(el).cursor === "pointer");
-  const drags = Autofill.draggables(root).map(item => item.el);
+  const drags = [...Autofill.draggables(root).map(item => item.el), ...Autofill.orderLists(root).flatMap(list => list.items.map(item => item.el))];
   const found = [...new Set([...direct, ...symbols, ...pointer])].filter(el =>
     !el.closest(`#${HOST_ID}`) && Autofill.available(el) && el.type !== "submit" && short(el) &&
     !drags.some(item => item.contains(el) || el.contains(item)) &&
@@ -2558,6 +2607,16 @@ function pointTarget(x, y, graphEl) {
   return hit && scope.contains(hit) ? hit : graphEl;
 }
 
+const OrderMemory = {
+  saved: {},
+  get() {
+    return this.saved[location.hostname] ?? 0;
+  },
+  set(index) {
+    this.saved[location.hostname] = index;
+  }
+};
+
 const DragMemory = {
   key: () => `${location.hostname}`,
   get() {
@@ -2680,6 +2739,18 @@ const Tools = {
           }
         },
         required: ["entries"]
+      }
+    },
+    {
+      name: "reorder",
+      description: "Put the items of an order list into the given order, top to bottom. Use it for questions that ask to place steps or events in the correct order, where the items themselves move and there are no drop zones. List every item exactly once by its text.",
+      input_schema: {
+        type: "object",
+        properties: {
+          list: { type: "integer", minimum: 1, description: "Order list number from the controls list, default 1" },
+          order: { type: "array", minItems: 2, items: { type: "string" }, description: "Every item's text, in the correct order from first to last" }
+        },
+        required: ["order"]
       }
     },
     {
@@ -2902,6 +2973,65 @@ const Tools = {
       return { ok: false, content: `Tried to move "${source.label.slice(0, 60)}" into drop zone ${zone}, but the zone still does not show it. Call read_page to see where things are now.` };
     }
     return { ok: true, content: `Dragged "${source.label.slice(0, 60)}" to drop zone ${zone}.`, summary: `Dragged ${source.label.slice(0, 40)} to zone ${zone}` };
+  },
+
+  async reorder(root, { list = 1, order = [] }) {
+    const lists = () => Autofill.orderLists(Question.root(true)?.el || root, true);
+    const current = () => lists()[list - 1]?.items || [];
+    const start = current();
+    if (!start.length) return { ok: false, content: `There is no order list ${list}. Order lists found: ${lists().length}.` };
+    const wanted = order.map(text => pickLoose(start, String(text))?.label);
+    const missing = order.filter((text, i) => !wanted[i]);
+    if (missing.length || new Set(wanted).size !== wanted.length || wanted.length !== start.length) {
+      const names = start.map(item => `"${item.label}"`).join(", ");
+      return { ok: false, content: `Give every item exactly once, using their text. ${missing.length ? `Not found: ${missing.map(text => `"${text}"`).join(", ")}. ` : ""}Items: ${names}.` };
+    }
+    const at = label => current().findIndex(item => item.label === label);
+    const attempts = [
+      async (from, to) => {
+        await pressElement(from.el);
+        await sleep(90);
+        await pressElement(to.el);
+      },
+      async (from, to, steps, target) => {
+        for (const key of ["Space", "Enter"]) {
+          const item = current().find(entry => entry.label === from.label)?.el || from.el;
+          item.focus?.({ preventScroll: true });
+          await pressKey(item, key);
+          await sleep(80);
+          for (let i = 0; i < Math.abs(steps); i++) await pressKey(document.activeElement || item, steps < 0 ? "Up" : "Down");
+          await pressKey(document.activeElement || item, key);
+          await settle(100, 500);
+          if (at(from.label) === target) return;
+        }
+      },
+      async (from, to) => dragTo(from.el, to.el)
+    ];
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < wanted.length; i++) {
+        if (at(wanted[i]) === i) continue;
+        const preferred = OrderMemory.get();
+        for (const index of [preferred, ...attempts.keys()].filter((value, n, all) => all.indexOf(value) === n)) {
+          const items = current();
+          const from = items[at(wanted[i])];
+          const to = items[i];
+          if (!from || !to) break;
+          await attempts[index](from, to, i - at(wanted[i]), i);
+          await settle(120, 700);
+          if (at(wanted[i]) === i) {
+            OrderMemory.set(index);
+            break;
+          }
+        }
+      }
+      if (current().every((item, i) => item.label === wanted[i])) break;
+    }
+    const final = current().map(item => item.label);
+    const done = final.every((label, i) => label === wanted[i]);
+    const listing = final.map((label, i) => `${i + 1} "${label}"`).join(", ");
+    return done
+      ? { ok: true, content: `Order list ${list} is now: ${listing}.`, summary: `Ordered ${final.length} items` }
+      : { ok: false, content: `Could not fully reorder list ${list}. It now reads: ${listing}. Call read_page to check the page.` };
   },
 
   async type_keys(root, { field, part, keys, clear }) {

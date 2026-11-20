@@ -196,7 +196,7 @@ const Question = {
   stableText(el, strip) {
     const editable = [...el.querySelectorAll(EDITABLE)].filter(node => clean(node.textContent).length < 200);
     const slots = Autofill.fields(el).map(field => answerSlot(field.el, el));
-    const moved = [...Autofill.draggables(el), ...Autofill.dropZones(el)].map(entry => entry.el);
+    const moved = [...Autofill.draggables(el), ...Autofill.dropZones(el), ...Autofill.orderLists(el)].map(entry => entry.el);
     return Capture.text(el, strip, false, true, [...editable, ...slots, ...moved]).split("\n").map(clean)
       .filter(line => line && !FEEDBACK_LINE.test(line)).join("\n");
   },
@@ -206,7 +206,8 @@ const Question = {
       Autofill.fields(el).length,
       Autofill.dropdowns(el).map(dropdown => dropdown.options.length),
       Autofill.choices(el).filter(choice => !choice.option).map(choice => choice.label),
-      Autofill.draggables(el).map(item => item.label).sort()
+      Autofill.draggables(el).map(item => item.label).sort(),
+      Autofill.orderLists(el).map(list => list.items.map(item => item.label).sort())
     ];
     return [this.stableText(el, strip), controls];
   },

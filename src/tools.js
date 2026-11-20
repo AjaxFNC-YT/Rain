@@ -1,3 +1,13 @@
+const OrderMemory = {
+  saved: {},
+  get() {
+    return this.saved[location.hostname] ?? 0;
+  },
+  set(index) {
+    this.saved[location.hostname] = index;
+  }
+};
+
 const DragMemory = {
   key: () => `${location.hostname}`,
   get() {
@@ -120,6 +130,18 @@ const Tools = {
           }
         },
         required: ["entries"]
+      }
+    },
+    {
+      name: "reorder",
+      description: "Put the items of an order list into the given order, top to bottom. Use it for questions that ask to place steps or events in the correct order, where the items themselves move and there are no drop zones. List every item exactly once by its text.",
+      input_schema: {
+        type: "object",
+        properties: {
+          list: { type: "integer", minimum: 1, description: "Order list number from the controls list, default 1" },
+          order: { type: "array", minItems: 2, items: { type: "string" }, description: "Every item's text, in the correct order from first to last" }
+        },
+        required: ["order"]
       }
     },
     {
@@ -342,6 +364,65 @@ const Tools = {
       return { ok: false, content: `Tried to move "${source.label.slice(0, 60)}" into drop zone ${zone}, but the zone still does not show it. Call read_page to see where things are now.` };
     }
     return { ok: true, content: `Dragged "${source.label.slice(0, 60)}" to drop zone ${zone}.`, summary: `Dragged ${source.label.slice(0, 40)} to zone ${zone}` };
+  },
+
+  async reorder(root, { list = 1, order = [] }) {
+    const lists = () => Autofill.orderLists(Question.root(true)?.el || root, true);
+    const current = () => lists()[list - 1]?.items || [];
+    const start = current();
+    if (!start.length) return { ok: false, content: `There is no order list ${list}. Order lists found: ${lists().length}.` };
+    const wanted = order.map(text => pickLoose(start, String(text))?.label);
+    const missing = order.filter((text, i) => !wanted[i]);
+    if (missing.length || new Set(wanted).size !== wanted.length || wanted.length !== start.length) {
+      const names = start.map(item => `"${item.label}"`).join(", ");
+      return { ok: false, content: `Give every item exactly once, using their text. ${missing.length ? `Not found: ${missing.map(text => `"${text}"`).join(", ")}. ` : ""}Items: ${names}.` };
+    }
+    const at = label => current().findIndex(item => item.label === label);
+    const attempts = [
+      async (from, to) => {
+        await pressElement(from.el);
+        await sleep(90);
+        await pressElement(to.el);
+      },
+      async (from, to, steps, target) => {
+        for (const key of ["Space", "Enter"]) {
+          const item = current().find(entry => entry.label === from.label)?.el || from.el;
+          item.focus?.({ preventScroll: true });
+          await pressKey(item, key);
+          await sleep(80);
+          for (let i = 0; i < Math.abs(steps); i++) await pressKey(document.activeElement || item, steps < 0 ? "Up" : "Down");
+          await pressKey(document.activeElement || item, key);
+          await settle(100, 500);
+          if (at(from.label) === target) return;
+        }
+      },
+      async (from, to) => dragTo(from.el, to.el)
+    ];
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < wanted.length; i++) {
+        if (at(wanted[i]) === i) continue;
+        const preferred = OrderMemory.get();
+        for (const index of [preferred, ...attempts.keys()].filter((value, n, all) => all.indexOf(value) === n)) {
+          const items = current();
+          const from = items[at(wanted[i])];
+          const to = items[i];
+          if (!from || !to) break;
+          await attempts[index](from, to, i - at(wanted[i]), i);
+          await settle(120, 700);
+          if (at(wanted[i]) === i) {
+            OrderMemory.set(index);
+            break;
+          }
+        }
+      }
+      if (current().every((item, i) => item.label === wanted[i])) break;
+    }
+    const final = current().map(item => item.label);
+    const done = final.every((label, i) => label === wanted[i]);
+    const listing = final.map((label, i) => `${i + 1} "${label}"`).join(", ");
+    return done
+      ? { ok: true, content: `Order list ${list} is now: ${listing}.`, summary: `Ordered ${final.length} items` }
+      : { ok: false, content: `Could not fully reorder list ${list}. It now reads: ${listing}. Call read_page to check the page.` };
   },
 
   async type_keys(root, { field, part, keys, clear }) {
