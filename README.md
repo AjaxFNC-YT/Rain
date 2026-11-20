@@ -49,11 +49,14 @@ No userscript manager? Paste [`dist/rain.console.js`](dist/rain.console.js) into
 - Fills text boxes, math editors, dropdowns, multiple choice, drag and drop, highlight questions and graphs
 - **Answer only** mode skips the explanation, so it's faster and cheaper
 - **Accuracy** setting to miss some questions on purpose, by chance or to hold a target score
-- Saved chats, private chats, and a whole-chat memory option
-- Status pill at the top of the page, with its own style, position and detail settings
+- Paste, drop or attach screenshots and ask about them
+- Quick model switcher at the top of the panel
+- Saved chats you can pin, rename and search, plus private chats
+- Stealth mode and a panic key that hides Rain, unloads it, or leaves the page
+- Status pill at the top of the page with a Siri-style glow while Rain works
+- iOS-style settings with search, panel sizes, text size, glass opacity and toolbar options
 - Site tweaks, like dark mode
 - Shortcuts that work even while Rain is fully hidden
-- Optional sound effects, light and dark themes, and five accent colors
 
 ## Supported sites
 
@@ -75,6 +78,7 @@ Other sites work too with a generic reader. Press **Area** and click the questio
 | <kbd>Alt</kbd> + <kbd>S</kbd> | Answer this question |
 | <kbd>Alt</kbd> + <kbd>A</kbd> | Auto Answer on or off |
 | <kbd>Alt</kbd> + <kbd>Q</kbd> | Pick the question area |
+| <kbd>Alt</kbd> + <kbd>X</kbd> | Panic |
 
 Change them in **Settings → Keys**.
 

@@ -16,7 +16,7 @@ const Sounds = {
 
   play(name, force = false) {
     const settings = Settings.load();
-    if ((!settings.sounds && !force) || settings.volume <= 0) return;
+    if ((!settings.sounds && !force) || (settings.stealth && !force) || settings.volume <= 0) return;
     try {
       this.ctx ||= new (window.AudioContext || window.webkitAudioContext)();
       if (this.ctx.state === "suspended") this.ctx.resume();

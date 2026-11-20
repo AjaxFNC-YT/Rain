@@ -6,7 +6,8 @@ function createIsland(root) {
   const action = h("button", { class: "r-island-action", type: "button", hidden: true });
   const bar = h("span", { class: "r-island-bar", hidden: true });
   const inner = h("div", { class: "r-island-inner" }, glyph, text, action);
-  const el = h("div", { class: "r-island", role: "status", "aria-live": "polite", "data-show": "false" }, inner, bar);
+  const el = h("div", { class: "r-island", role: "status", "aria-live": "polite", "data-show": "false", "data-busy": "false" },
+    h("span", { class: "r-island-rim", "aria-hidden": "true" }), inner, bar);
   root.append(el);
 
   let timer = null;
@@ -14,19 +15,23 @@ function createIsland(root) {
   let state = { key: "", glyph: "", busy: false };
   let lastIdle = "";
 
-  const prefs = () => ({ ...CONFIG.defaults.island, ...Settings.load().island });
+  const prefs = () => {
+    const settings = Settings.load();
+    return { ...CONFIG.defaults.island, ...settings.island, enabled: settings.island.enabled && !settings.stealth };
+  };
 
+  const orb = () => h("span", { class: "r-orb" }, h("i"), h("i"), h("i"));
   const drop = () => {
     const svg = icon("drop");
     svg.setAttribute("class", "r-island-drop");
-    return svg;
+    return [svg, h("span", { class: "r-island-ripple" })];
   };
 
   const glyphs = {
-    busy: () => rainfall(),
+    busy: () => el.dataset.style === "siri" ? orb() : rainfall(),
     ok: () => icon("check"),
     error: () => icon("warn"),
-    drop: () => [drop(), h("span", { class: "r-island-ripple" })],
+    drop: () => el.dataset.style === "siri" ? orb() : drop(),
     dot: () => h("span", { class: "r-island-dot" })
   };
 
@@ -38,16 +43,21 @@ function createIsland(root) {
   function measure() {
     el.style.width = "auto";
     const natural = Math.ceil(inner.scrollWidth) + 2;
-    const limit = Math.min(460, innerWidth - 24);
+    const limit = Math.min(480, innerWidth - 24);
     return Math.min(natural, limit);
   }
 
   function resize() {
-    const from = el.dataset.show === "true" ? el.getBoundingClientRect().width : 40;
+    const from = el.dataset.show === "true" ? el.getBoundingClientRect().width : 44;
     const to = measure();
     el.style.width = `${from}px`;
     void el.offsetWidth;
     el.style.width = `${to}px`;
+  }
+
+  function setBusy(value) {
+    state.busy = value;
+    el.dataset.busy = String(value);
   }
 
   function hide() {
@@ -55,6 +65,7 @@ function createIsland(root) {
     el.dataset.show = "false";
     onClick = null;
     state = { key: "", glyph: "", busy: false };
+    el.dataset.busy = "false";
   }
 
   function show(message, { busy = false, countdown = 0, action: act = null, tone = null, glyph: kind = null, click = null, duration, idle = false, important = false } = {}) {
@@ -80,7 +91,8 @@ function createIsland(root) {
     clearTimeout(timer);
     const glyphKind = kind || (busy || countdown ? "busy" : tone || "dot");
     if (glyphKind !== state.glyph) glyph.replaceChildren(...[].concat(glyphs[glyphKind]()));
-    state = { key, glyph: glyphKind, busy: busy || Boolean(countdown) };
+    state = { key, glyph: glyphKind, busy: false };
+    setBusy(busy || Boolean(countdown));
 
     el.dataset.tone = tone || "";
     el.title = key;
@@ -116,19 +128,21 @@ function createIsland(root) {
     apply(settings);
     if (!settings.enabled && !options?.action) return;
     clearTimeout(timer);
-    el.style.width = "40px";
+    el.style.width = "44px";
     el.dataset.tone = "";
     state = { key: "", glyph: "drop", busy: false };
-    glyph.replaceChildren(...glyphs.drop());
+    setBusy(true);
+    glyph.replaceChildren(...[].concat(glyphs.drop()));
     text.replaceChildren();
     action.hidden = true;
     bar.hidden = true;
     el.dataset.show = "true";
-    timer = setTimeout(() => show(message, { glyph: "drop", important: true, ...options }), 760);
+    timer = setTimeout(() => show(message, { glyph: "drop", important: true, ...options }), 820);
   }
 
   function settle() {
     if (!state.busy) return;
+    setBusy(false);
     clearTimeout(timer);
     timer = setTimeout(hide, 1400);
   }

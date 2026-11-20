@@ -51,6 +51,8 @@ const Settings = {
     const settings = { ...CONFIG.defaults, ...saved };
     settings.keys = { ...CONFIG.defaults.keys, ...saved.keys };
     settings.island = { ...CONFIG.defaults.island, ...saved.island };
+    settings.look = { ...CONFIG.defaults.look, ...saved.look, toolbar: { ...CONFIG.defaults.look.toolbar, ...saved.look?.toolbar } };
+    settings.recentModels = Array.isArray(saved.recentModels) ? saved.recentModels : [];
     settings.tweaks = { ...saved.tweaks };
     settings.providers = Object.fromEntries(CONFIG.providers.map(provider => [provider.id, {
       apiKey: "",

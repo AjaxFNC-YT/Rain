@@ -1,7 +1,7 @@
 {
   "name": "Rain",
   "namespace": "rain",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "AI school helper for IXL, DeltaMath, iCEV, Khan Academy and Quizlet",
   "author": "ajaxfnc",
   "repo": "AjaxFNC-YT/Rain",
@@ -38,7 +38,8 @@
       "toggle": "Backquote",
       "auto": "Alt+KeyA",
       "answer": "Alt+KeyS",
-      "pick": "Alt+KeyQ"
+      "pick": "Alt+KeyQ",
+      "panic": "Alt+KeyX"
     },
     "tweaks": {},
     "reduceTransparency": false,
@@ -49,10 +50,28 @@
     "island": {
       "enabled": true,
       "position": "top",
-      "style": "glass",
+      "style": "siri",
       "detail": "all",
       "duration": "normal"
-    }
+    },
+    "panicAction": "hide",
+    "panicUrl": "https://classroom.google.com",
+    "stealth": false,
+    "look": {
+      "size": "regular",
+      "text": 14,
+      "glass": 88,
+      "bubbles": true,
+      "times": false,
+      "actions": true,
+      "toolbar": {
+        "auto": true,
+        "area": true,
+        "newChat": true,
+        "model": true
+      }
+    },
+    "recentModels": []
   },
   "efforts": [
     "low",
@@ -246,7 +265,21 @@
         "light": "#4d5763"
       }
     ],
-    "maxChats": 60
+    "maxChats": 60,
+    "sizes": {
+      "compact": [
+        360,
+        560
+      ],
+      "regular": [
+        400,
+        640
+      ],
+      "large": [
+        460,
+        740
+      ]
+    }
   },
   "legacyNamespace": "sch-buddy",
   "providers": [

@@ -5,6 +5,27 @@ const SVG_STYLE_PROPS = ["fill", "stroke", "stroke-width", "stroke-dasharray", "
 const BLOCK_DISPLAY = /^(block|flex|grid|table|list-item|table-row|flow-root)$/;
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
+async function imageFromFile(file) {
+  const bitmap = await createImageBitmap(file);
+  const draw = (side, type, quality) => {
+    const scale = Math.min(1, side / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL(type, quality);
+  };
+  const lossless = file.type === "image/png" && file.size < 1_500_000;
+  const block = blockFromDataUrl(draw(CONFIG.capture.maxImageSide, lossless ? "image/png" : "image/jpeg", .9));
+  const thumb = draw(240, "image/jpeg", .72);
+  bitmap.close?.();
+  if (!block) throw new RainError("That image couldn't be read");
+  return { block, thumb };
+}
+
 const Capture = {
   text(root, strip = [], includeAnswers = true, bare = false, skip = []) {
     const stripped = new Set([...(strip.length ? root.querySelectorAll(strip.join(",")) : []), ...skip]);

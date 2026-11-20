@@ -23,8 +23,11 @@ function createApp() {
   let chat = Chats.create(Question.site().label);
   const answered = new Set();
 
-  const say = (role, text) => {
-    const entry = { role, text, at: Date.now() };
+  let lastAsk = null;
+  let teardown = () => {};
+
+  const say = (role, text, extra = {}) => {
+    const entry = { role, text, at: Date.now(), ...extra };
     chat.log.push(entry);
     panel.log(entry);
   };
@@ -214,9 +217,11 @@ function createApp() {
 
     chat: () => chat,
 
-    async ask(mode, input, expectedKey) {
+    async ask(mode, input, expectedKey, attachments = []) {
       if (busy || picking) return;
       const automatic = mode === "answer";
+      if (!automatic) lastAsk = { mode, input, attachments };
+      if (mode === "chat" && !input && attachments.length) input = "Look at the attached image and help me with it.";
       cancelFill();
 
       const settings = Settings.load();
@@ -265,11 +270,13 @@ function createApp() {
         const turn = quiet
           ? Prompts.quietTurn + (miss ? `\n\n${Prompts.miss}` : "")
           : Prompts.turn(mode, input, chat.hints) + enter + (miss ? `\n\n${Prompts.miss}` : "");
+        const attached = attachments.map(item => item.block);
+        const note = attached.length ? `\n\nThe student attached ${attached.length} image${attached.length > 1 ? "s" : ""} of their own.` : "";
         const content = fresh
-          ? [...question.images, { type: "text", text: `${Prompts.context(question)}\n\n---\n\n${turn}` }]
-          : [{ type: "text", text: turn }];
+          ? [...question.images, ...attached, { type: "text", text: `${Prompts.context(question)}\n\n---\n\n${turn}${note}` }]
+          : [...attached, { type: "text", text: turn + note }];
 
-        if (!quiet) say("you", label(mode, input));
+        if (!quiet) say("you", attachments.length && mode === "chat" && input.startsWith("Look at the attached image") ? "" : label(mode, input), attachments.length ? { images: attachments.map(item => item.thumb) } : {});
         const message = { role: "user", content };
         const messages = [...history(), message];
         status(`Thinking with ${model}`, { busy: true });
@@ -345,7 +352,7 @@ function createApp() {
       status("Click the question on the page");
       let el;
       try {
-        el = await pickElement();
+        el = await pickElement(Question.root()?.el);
       } finally {
         picking = false;
       }
@@ -445,6 +452,96 @@ function createApp() {
     },
 
     status,
+
+    retry() {
+      if (!lastAsk || busy) return;
+      app.ask(lastAsk.mode, lastAsk.input, undefined, lastAsk.attachments);
+    },
+
+    switchModel(providerId, model, quiet = false) {
+      const settings = Settings.load();
+      const recent = [{ provider: providerId, model }, ...settings.recentModels.filter(entry => entry.provider !== providerId || entry.model !== model)].slice(0, 8);
+      const next = Settings.save({
+        provider: providerId,
+        providers: { ...settings.providers, [providerId]: { ...settings.providers[providerId], model } },
+        recentModels: recent
+      });
+      app.settingsChanged(next);
+      if (!quiet) {
+        Sounds.play("tick");
+        status(`Switched to ${AI.label(next)}`, { tone: "ok" });
+      }
+    },
+
+    async checkConnection() {
+      const settings = Settings.load();
+      try {
+        const reply = await AI.send({ settings, system: "Reply with the single word: ok", messages: [{ role: "user", content: [{ type: "text", text: "ping" }] }] });
+        Stats.add(reply.usage);
+        Sounds.play("success");
+        return { ok: true, text: `${AI.label(settings)} is connected.` };
+      } catch (err) {
+        Sounds.play("error");
+        return { ok: false, text: err.message };
+      }
+    },
+
+    renameChat(id, title) {
+      if (id === chat.id) {
+        chat.title = title;
+        persist();
+      }
+      Chats.update(id, { title });
+      panel.refreshChats();
+    },
+
+    pinChat(id, pinned) {
+      if (id === chat.id) chat.pinned = pinned;
+      Chats.update(id, { pinned });
+      Sounds.play("tick");
+      panel.refreshChats();
+    },
+
+    rerender() {
+      panel.renderChat(chat);
+    },
+
+    resetPosition() {
+      panel.resetPosition();
+    },
+
+    resetSettings() {
+      const keep = Settings.load().providers;
+      Store.set("settings", { providers: keep });
+      const fresh = Settings.load();
+      app.settingsChanged(fresh);
+      Tweaks.apply(fresh);
+      panel.showView("settings");
+      status("Settings reset", { tone: "ok" });
+    },
+
+    applyStealth() {
+      const settings = Settings.load();
+      panel.updateLauncher();
+      if (settings.stealth) panel.island.hide();
+    },
+
+    panic() {
+      const settings = Settings.load();
+      if (auto) app.toggleAuto();
+      app.stop();
+      cancelFill();
+      if (settings.panicAction === "hide") {
+        panel.island.hide();
+        panel.setOpen(false, true);
+        Question.pin(null);
+        return;
+      }
+      teardown();
+      window.__rain = undefined;
+      if (settings.panicAction === "leave" && /^https?:\/\//i.test(settings.panicUrl || "")) location.replace(settings.panicUrl);
+    },
+
     finishSetup() {
       panel.showView("main");
       const parts = Keys.parts(Settings.load().keys.toggle);
@@ -463,6 +560,7 @@ function createApp() {
       else if (action === "auto") app.toggleAuto();
       else if (action === "answer") app.ask("choice");
       else if (action === "pick") app.pick();
+      else if (action === "panic") app.panic();
     }
   };
 
@@ -476,7 +574,7 @@ function createApp() {
   if (Settings.ready(settings)) Store.set("setup", true);
   const setup = !Store.get("setup", false);
   const open = Store.get("open", settings.openOnStart);
-  panel.boot(setup || (settings.openOnStart && open));
+  panel.boot(setup || (settings.openOnStart && open && !settings.stealth));
   if (setup) panel.showView("setup");
   const toggleParts = Keys.parts(settings.keys.toggle);
   if (setup) {
@@ -546,20 +644,22 @@ function createApp() {
     }
   }, 850);
 
+  teardown = () => {
+    auto = false;
+    cancelFill();
+    clearInterval(timer);
+    Chats.save(chat);
+    window.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("pagehide", onLeave);
+    document.removeEventListener("click", onClick, true);
+    unwatch();
+    Tweaks.clear();
+    panel.remove();
+  };
+
   return {
     version: CONFIG.version,
     show: () => panel.setOpen(true),
-    remove: () => {
-      auto = false;
-      cancelFill();
-      clearInterval(timer);
-      Chats.save(chat);
-      window.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("pagehide", onLeave);
-      document.removeEventListener("click", onClick, true);
-      unwatch();
-      Tweaks.clear();
-      panel.remove();
-    }
+    remove: () => teardown()
   };
 }

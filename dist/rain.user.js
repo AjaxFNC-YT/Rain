@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rain
 // @namespace    rain
-// @version      1.0.1
+// @version      1.1.0
 // @description  AI school helper for IXL, DeltaMath, iCEV, Khan Academy and Quizlet
 // @author       ajaxfnc
 // @homepageURL  https://github.com/AjaxFNC-YT/Rain
@@ -35,7 +35,7 @@
 const CONFIG = {
   "name": "Rain",
   "namespace": "rain",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "api": {
     "anthropicVersion": "2026-10-21",
     "fallbackBeta": "server-side-fallback-2026-07-01",
@@ -69,7 +69,8 @@ const CONFIG = {
       "toggle": "Backquote",
       "auto": "Alt+KeyA",
       "answer": "Alt+KeyS",
-      "pick": "Alt+KeyQ"
+      "pick": "Alt+KeyQ",
+      "panic": "Alt+KeyX"
     },
     "tweaks": {},
     "reduceTransparency": false,
@@ -80,10 +81,28 @@ const CONFIG = {
     "island": {
       "enabled": true,
       "position": "top",
-      "style": "glass",
+      "style": "siri",
       "detail": "all",
       "duration": "normal"
-    }
+    },
+    "panicAction": "hide",
+    "panicUrl": "https://classroom.google.com",
+    "stealth": false,
+    "look": {
+      "size": "regular",
+      "text": 14,
+      "glass": 88,
+      "bubbles": true,
+      "times": false,
+      "actions": true,
+      "toolbar": {
+        "auto": true,
+        "area": true,
+        "newChat": true,
+        "model": true
+      }
+    },
+    "recentModels": []
   },
   "legacyNamespace": "sch-buddy",
   "providers": [
@@ -170,7 +189,21 @@ const CONFIG = {
         "light": "#4d5763"
       }
     ],
-    "maxChats": 60
+    "maxChats": 60,
+    "sizes": {
+      "compact": [
+        360,
+        560
+      ],
+      "regular": [
+        400,
+        640
+      ],
+      "large": [
+        460,
+        740
+      ]
+    }
   },
   "sites": [
     {
@@ -362,6 +395,8 @@ const Settings = {
     const settings = { ...CONFIG.defaults, ...saved };
     settings.keys = { ...CONFIG.defaults.keys, ...saved.keys };
     settings.island = { ...CONFIG.defaults.island, ...saved.island };
+    settings.look = { ...CONFIG.defaults.look, ...saved.look, toolbar: { ...CONFIG.defaults.look.toolbar, ...saved.look?.toolbar } };
+    settings.recentModels = Array.isArray(saved.recentModels) ? saved.recentModels : [];
     settings.tweaks = { ...saved.tweaks };
     settings.providers = Object.fromEntries(CONFIG.providers.map(provider => [provider.id, {
       apiKey: "",
@@ -917,6 +952,27 @@ const SKIP_TAGS = new Set(["STYLE", "NOSCRIPT", "TEMPLATE", "IFRAME", "CANVAS", 
 const SVG_STYLE_PROPS = ["fill", "stroke", "stroke-width", "stroke-dasharray", "opacity", "font-size", "font-family", "font-weight", "text-anchor"];
 const BLOCK_DISPLAY = /^(block|flex|grid|table|list-item|table-row|flow-root)$/;
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+async function imageFromFile(file) {
+  const bitmap = await createImageBitmap(file);
+  const draw = (side, type, quality) => {
+    const scale = Math.min(1, side / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL(type, quality);
+  };
+  const lossless = file.type === "image/png" && file.size < 1_500_000;
+  const block = blockFromDataUrl(draw(CONFIG.capture.maxImageSide, lossless ? "image/png" : "image/jpeg", .9));
+  const thumb = draw(240, "image/jpeg", .72);
+  bitmap.close?.();
+  if (!block) throw new RainError("That image couldn't be read");
+  return { block, thumb };
+}
 
 const Capture = {
   text(root, strip = [], includeAnswers = true, bare = false, skip = []) {
@@ -3183,10 +3239,17 @@ const Chats = {
       title: chat.title,
       site: chat.site,
       updated: chat.updated,
+      pinned: Boolean(chat.pinned),
       count: chat.log.filter(entry => entry.role === "you").length
     });
     for (const old of index.splice(CONFIG.ui.maxChats)) Store.remove(`chat:${old.id}`);
     Store.set("chats", index);
+  },
+
+  update(id, patch) {
+    const stored = Store.get(`chat:${id}`, null);
+    if (stored) Store.set(`chat:${id}`, { ...stored, ...patch });
+    Store.set("chats", this.index().map(entry => entry.id === id ? { ...entry, ...patch } : entry));
   },
 
   remove(id) {
@@ -3228,7 +3291,7 @@ const Sounds = {
 
   play(name, force = false) {
     const settings = Settings.load();
-    if ((!settings.sounds && !force) || settings.volume <= 0) return;
+    if ((!settings.sounds && !force) || (settings.stealth && !force) || settings.volume <= 0) return;
     try {
       this.ctx ||= new (window.AudioContext || window.webkitAudioContext)();
       if (this.ctx.state === "suspended") this.ctx.resume();
@@ -3279,7 +3342,8 @@ const KEY_ACTIONS = [
   { id: "toggle", label: "Show or hide Rain", note: "Works while Rain is fully hidden" },
   { id: "answer", label: "Answer this question" },
   { id: "auto", label: "Turn Auto Answer on or off" },
-  { id: "pick", label: "Pick the question area" }
+  { id: "pick", label: "Pick the question area" },
+  { id: "panic", label: "Panic", note: "Runs the panic action from Hiding and panic" }
 ];
 
 const Keys = {
@@ -3567,7 +3631,23 @@ const ICONS = {
   trash: "M5 7h14M10 7V5h4v2M7 7l.9 12h8.2L17 7",
   back: "M14.5 5.5L8 12l6.5 6.5",
   refresh: "M18.5 12a6.5 6.5 0 1 1-1.9-4.6M18.5 5v3.5H15",
-  play: "M8.5 6.5l9 5.5l-9 5.5z"
+  play: "M8.5 6.5l9 5.5l-9 5.5z",
+  cpu: "M7 7h10v10H7zM10 3.5V7M14 3.5V7M10 17v3.5M14 17v3.5M3.5 10H7M3.5 14H7M17 10h3.5M17 14h3.5",
+  pencil: "M4.5 19.5l4-1 10-10-3-3-10 10zM13.5 7.5l3 3",
+  target: "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7",
+  palette: "M12 3.5a8.5 8.5 0 1 0 0 17c1.1 0 1.7-.8 1.7-1.6 0-1.3-1.2-1.6-1.2-2.8 0-.9.8-1.6 1.7-1.6h2.3a4 4 0 0 0 4-4c0-4.1-3.8-7-8.5-7zM7.5 11.5h.01M9.5 7.5h.01M14.5 7.5h.01",
+  layout: "M4.5 5h15v14h-15zM4.5 9h15M10 9v10",
+  pill: "M7.5 8.5h9a3.5 3.5 0 0 1 0 7h-9a3.5 3.5 0 0 1 0-7z",
+  keyboard: "M3.5 7h17v10h-17zM7 10.5h.01M10 10.5h.01M13 10.5h.01M16 10.5h.01M8 13.5h8",
+  shield: "M12 3.5l7 2.5v5.5c0 4.2-3 7.6-7 9-4-1.4-7-4.8-7-9V6z",
+  globe: "M12 3.5a8.5 8.5 0 1 0 0 17a8.5 8.5 0 1 0 0-17M3.5 12h17M12 3.5c2.3 2.3 3.5 5.1 3.5 8.5s-1.2 6.2-3.5 8.5c-2.3-2.3-3.5-5.1-3.5-8.5s1.2-6.2 3.5-8.5",
+  archive: "M4 5h16v4H4zM5.5 9v10h13V9M10 13h4",
+  info: "M12 3.5a8.5 8.5 0 1 0 0 17a8.5 8.5 0 1 0 0-17M12 11v5M12 8v.01",
+  chevron: "M9.5 6l6 6l-6 6",
+  down: "M7 10l5 5l5-5",
+  clip: "M15.5 8l-6.6 6.6a1.9 1.9 0 0 0 2.7 2.7l7-7a3.9 3.9 0 0 0-5.5-5.5l-7.1 7.1a5.9 5.9 0 0 0 8.3 8.3l6.2-6.2",
+  pin: "M9 4h6l-1 5l3 3v1.5H7V12l3-3zM12 13.5V20",
+  image: "M4 5.5h16v13H4zM9 9.5a1.5 1.5 0 1 0 0 .01M4 16l4.5-4.5l4 4l2.5-2.5l5 5"
 };
 
 function h(tag, props = {}, ...children) {
@@ -3719,9 +3799,12 @@ const STYLE_TOKENS = `
   --med: 220ms;
   --slow: 320ms;
   --ease: cubic-bezier(.2, .7, .2, 1);
+  --spring: cubic-bezier(.32, .72, 0, 1);
+  --pop: cubic-bezier(.34, 1.3, .64, 1);
+  --sheet: 420ms;
   --r-sm: 8px;
   --r: 12px;
-  --r-lg: 24px;
+  --r-lg: 26px;
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
   --size: 14px;
@@ -3737,7 +3820,7 @@ const STYLE_TOKENS = `
   color-scheme: dark;
   --accent: var(--accent-dark);
   --on-accent: #fff;
-  --glass: rgba(28, 29, 33, .88);
+  --glass: rgba(30, 31, 36, var(--glass-a, .82));
   --surface: #1c1d21;
   --group: rgba(255, 255, 255, .06);
   --fill: rgba(255, 255, 255, .08);
@@ -3762,7 +3845,7 @@ const STYLE_TOKENS = `
   color-scheme: light;
   --accent: var(--accent-light);
   --on-accent: #fff;
-  --glass: rgba(247, 247, 249, .8);
+  --glass: rgba(246, 246, 249, calc(var(--glass-a, .82) - .06));
   --surface: #f2f2f6;
   --group: rgba(255, 255, 255, .72);
   --fill: rgba(118, 118, 128, .12);
@@ -3834,6 +3917,13 @@ const STYLE_TOKENS = `
 }
 @keyframes r-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes r-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes r-pop { from { opacity: 0; transform: translateY(-6px) scale(.96); } to { opacity: 1; transform: none; } }
+@keyframes r-push-in { from { opacity: 0; transform: translateX(28px); } to { opacity: 1; transform: none; } }
+@keyframes r-push-out { from { opacity: 0; transform: translateX(-28px); } to { opacity: 1; transform: none; } }
+@keyframes r-rise { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes r-from-right { from { opacity: 0; transform: translateX(14px) scale(.96); transform-origin: 100% 100%; } to { opacity: 1; transform: none; } }
+@keyframes r-from-left { from { opacity: 0; transform: translateX(-10px) scale(.98); transform-origin: 0 100%; } to { opacity: 1; transform: none; } }
+@keyframes r-grow { from { opacity: 0; transform: scale(.7); } to { opacity: 1; transform: none; } }
 @keyframes r-drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 @keyframes r-drop {
   0% { transform: translateY(-18px) scale(.7); opacity: 0; }
@@ -3856,106 +3946,133 @@ const STYLE_PANEL = `
   right: 18px;
   bottom: 18px;
   z-index: 2147483646;
-  width: min(392px, calc(100vw - 24px));
-  height: min(640px, calc(100vh - 24px));
+  width: min(var(--panel-w, 400px), calc(100vw - 24px));
+  height: min(var(--panel-h, 640px), calc(100vh - 24px));
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: clip;
   background: var(--glass);
-  -webkit-backdrop-filter: blur(36px) saturate(180%);
-  backdrop-filter: blur(36px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(190%);
+  backdrop-filter: blur(40px) saturate(190%);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow), 0 0 0 .5px var(--hairline), inset 0 .5px 0 var(--hi);
   opacity: 0;
   visibility: hidden;
-  transform: translateY(10px) scale(.985);
+  transform: translateY(16px) scale(.96);
   transform-origin: 100% 100%;
-  transition: opacity var(--med) var(--ease), transform var(--med) var(--ease), visibility 0s linear var(--med);
+  transition: opacity 220ms var(--ease), transform var(--sheet) var(--spring), visibility 0s linear var(--sheet), width var(--sheet) var(--spring), height var(--sheet) var(--spring);
 }
 .r-panel[data-open="true"] {
   opacity: 1;
   visibility: visible;
   transform: none;
-  transition: opacity var(--med) var(--ease), transform var(--med) var(--ease), visibility 0s;
+  transition: opacity 220ms var(--ease), transform var(--sheet) var(--spring), visibility 0s, width var(--sheet) var(--spring), height var(--sheet) var(--spring);
 }
 .r-panel[data-dragging="true"] { transition: none; cursor: grabbing; }
 .r[data-solid="true"] .r-panel, .r[data-solid="true"] .r-launcher { -webkit-backdrop-filter: none; backdrop-filter: none; }
 .r-panel[data-boot="true"] .r-head,
 .r-panel[data-boot="true"] .r-bar,
 .r-panel[data-boot="true"] .r-log,
-.r-panel[data-boot="true"] .r-foot { animation: r-in var(--slow) var(--ease) both; }
-.r-panel[data-boot="true"] .r-bar { animation-delay: 50ms; }
-.r-panel[data-boot="true"] .r-log { animation-delay: 100ms; }
-.r-panel[data-boot="true"] .r-foot { animation-delay: 150ms; }
+.r-panel[data-boot="true"] .r-foot { animation: r-rise 520ms var(--spring) both; }
+.r-panel[data-boot="true"] .r-bar { animation-delay: 60ms; }
+.r-panel[data-boot="true"] .r-log { animation-delay: 120ms; }
+.r-panel[data-boot="true"] .r-foot { animation-delay: 180ms; }
 
 .r-head {
+  position: relative;
+  z-index: 3;
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 50px;
-  padding: 0 10px 0 18px;
-  border-bottom: 1px solid var(--line-soft);
+  gap: 8px;
+  min-height: 62px;
+  padding: 10px 10px 10px 18px;
+  border-bottom: .5px solid var(--line);
   cursor: grab;
   touch-action: none;
   -webkit-user-select: none;
   user-select: none;
 }
-.r-brand { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 7px; overflow: hidden; white-space: nowrap; }
-.r-brand b { font-size: 16px; font-weight: 700; letter-spacing: -.02em; }
-.r-brand-sep { color: var(--faint); }
-.r-brand-site { overflow: hidden; color: var(--muted); font-weight: 520; text-overflow: ellipsis; }
+.r-title { flex: 1; min-width: 0; }
+.r-title-row { display: flex; align-items: center; gap: 8px; }
+.r-title-row b { font-size: 19px; font-weight: 750; letter-spacing: -.03em; line-height: 1.15; }
+.r-sub { display: flex; gap: 8px; margin-top: 1px; overflow: hidden; color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.r-sub-site { overflow: hidden; text-overflow: ellipsis; }
+.r-sub-activity { color: var(--accent); font-weight: 600; animation: r-fade var(--med) var(--ease); }
+.r-sub-activity:empty { display: none; }
 .r-tag {
-  align-self: center;
   padding: 0 8px;
   border-radius: 999px;
   background: var(--fill);
   color: var(--muted);
   font: 600 11px/20px var(--font);
-  animation: r-fade var(--med) var(--ease);
+  animation: r-grow var(--med) var(--pop);
 }
+.r-head-tools { display: flex; gap: 2px; }
+.r-model-btn {
+  flex: none;
+  max-width: 150px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--fill);
+  font-size: 12.5px;
+  font-weight: 650;
+  white-space: nowrap;
+  transition: background var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+.r-model-btn span { overflow: hidden; text-overflow: ellipsis; }
+.r-model-btn svg { width: 14px; height: 14px; color: var(--muted); transition: transform var(--med) var(--spring); }
+.r-model-btn:hover:not(:disabled) { background: var(--fill-strong); }
+.r-model-btn:active:not(:disabled) { transform: scale(.96); }
+.r-model-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
 .r-icon-btn {
   flex: none;
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   border: 0;
   border-radius: 50%;
   background: none;
   color: var(--muted);
-  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease), transform var(--fast) var(--ease);
 }
 .r-icon-btn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
-.r-icon-btn[aria-pressed="true"] { color: var(--accent); }
+.r-icon-btn:active:not(:disabled) { transform: scale(.9); }
+.r-icon-btn[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 
-.r-views { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.r-views { position: relative; flex: 1; min-height: 0; overflow: clip; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
 .r-view {
   grid-area: 1 / 1;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  transition: opacity var(--med) var(--ease), transform var(--med) var(--ease), visibility 0s;
+  transition: opacity 260ms var(--ease), transform var(--sheet) var(--spring), visibility 0s;
 }
 .r-view[data-active="false"] {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transform: translateX(var(--shift, 14px));
-  transition: opacity var(--fast) var(--ease), transform var(--med) var(--ease), visibility 0s linear var(--med);
+  transform: translateX(var(--shift, 24px)) scale(.985);
+  transition: opacity 160ms var(--ease), transform var(--sheet) var(--spring), visibility 0s linear var(--sheet);
 }
-.r-view-main[data-active="false"] { --shift: -14px; }
+.r-view-main[data-active="false"] { --shift: -24px; }
 
 .r-bar {
   flex: none;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--line-soft);
+  padding: 8px 12px;
 }
+.r-bar-gap { flex: 1; }
 .r-chip {
   min-width: 0;
   display: inline-flex;
@@ -3969,23 +4086,24 @@ const STYLE_PANEL = `
   font-size: 12.5px;
   font-weight: 600;
   white-space: nowrap;
-  transition: border-color var(--fast) var(--ease), background var(--fast) var(--ease), color var(--fast) var(--ease);
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease), transform var(--fast) var(--ease);
 }
 .r-chip:hover:not(:disabled) { background: var(--fill-strong); }
+.r-chip:active:not(:disabled) { transform: scale(.95); }
 .r-chip span { overflow: hidden; text-overflow: ellipsis; }
 .r-chip svg { width: 14px; height: 14px; color: var(--muted); }
 .r-chip[data-active="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 .r-chip[data-active="true"] svg { color: var(--accent); }
-.r-chip-model { flex: 1; justify-content: flex-end; background: none; color: var(--muted); font-weight: 500; }
-.r-chip-model:hover:not(:disabled) { background: var(--fill); color: var(--text); }
+.r-chip-quiet { background: none; color: var(--muted); }
+.r-chip-quiet:hover:not(:disabled) { color: var(--text); background: var(--fill); }
 
-.r-auto[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.r-auto[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 .r-mini-switch {
   position: relative;
   flex: none;
-  width: 24px;
-  height: 14px;
-  border-radius: 7px;
+  width: 26px;
+  height: 16px;
+  border-radius: 8px;
   background: var(--fill-strong);
   transition: background var(--med) var(--ease);
 }
@@ -3994,16 +4112,16 @@ const STYLE_PANEL = `
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .25);
-  transition: transform var(--med) var(--ease);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .3);
+  transition: transform 320ms var(--pop);
 }
 .r-auto[aria-pressed="true"] .r-mini-switch { background: var(--accent); }
 .r-auto[aria-pressed="true"] .r-mini-switch::after { transform: translateX(10px); }
-.r-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.r-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; animation: r-fade var(--med) var(--ease); }
 
 .r-log {
   flex: 1;
@@ -4013,63 +4131,59 @@ const STYLE_PANEL = `
   gap: var(--gap);
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 14px 16px 18px;
+  padding: 10px 14px 18px;
+  scroll-behavior: smooth;
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
 }
 
-.r-empty { margin: auto 0; padding: 4px 2px; animation: r-in var(--slow) var(--ease) both; }
-.r-empty h2 { margin: 0 0 4px; font-size: 18px; font-weight: 700; letter-spacing: -.025em; }
-.r-empty p { margin: 0 0 14px; color: var(--muted); }
-.r-keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; color: var(--muted); font-size: 12.5px; }
+.r-empty { margin: auto 0; padding: 4px 4px 10px; animation: r-rise 520ms var(--spring) both; }
+.r-empty h2 { margin: 0 0 6px; font-size: 22px; font-weight: 750; letter-spacing: -.03em; }
+.r-empty p { margin: 0 0 16px; color: var(--muted); }
+.r-keys { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; margin: 0; color: var(--muted); font-size: 12.5px; }
 .r-keys dt { justify-self: start; }
-.r-keys dd { margin: 0; }
+.r-keys dd { margin: 0; align-self: center; }
 
-.r-msg { max-width: 100%; overflow-wrap: anywhere; animation: r-in var(--med) var(--ease) both; }
+.r-msg { max-width: 100%; overflow-wrap: anywhere; }
 .r-body p, .r-body ul, .r-body ol, .r-body pre, .r-body h4 { margin: 0 0 7px; }
 .r-body > :last-child { margin-bottom: 0; }
 .r-body ul, .r-body ol { padding-left: 18px; }
 .r-body li + li { margin-top: 2px; }
 .r-body h4 { font-size: 13.5px; font-weight: 650; }
 .r-body strong { font-weight: 650; }
-.r-body code { padding: 0 5px; border-radius: 5px; background: var(--fill); font: 12.5px var(--mono); }
+.r-body code { padding: 0 5px; border-radius: 5px; background: var(--fill); font: .9em var(--mono); }
 .r-body pre { padding: 10px 12px; border-radius: var(--r-sm); background: var(--fill); overflow: auto; }
 .r-body pre code { padding: 0; background: none; }
 
-.r-you {
-  align-self: flex-end;
-  max-width: 82%;
-  padding: 7px 13px;
-  border-radius: 18px 18px 5px 18px;
-  background: var(--accent);
-  color: var(--on-accent);
-}
-.r-rain { position: relative; padding-right: 26px; }
-.r-msg-copy {
-  position: absolute;
-  top: -2px;
-  right: -4px;
-  opacity: 0;
-  width: 26px;
-  height: 26px;
-}
-.r-rain:hover .r-msg-copy, .r-msg-copy:focus-visible { opacity: 1; }
-.r-msg-copy[data-done="true"] { opacity: 1; color: var(--ok); }
+.r-you { align-self: flex-end; max-width: 84%; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; animation: r-from-right 380ms var(--spring) both; }
+.r-you .r-bubble { padding: 8px 14px; border-radius: 20px 20px 6px 20px; background: var(--accent); color: var(--on-accent); }
+.r-you-images { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.r-you-images img { width: 92px; height: 92px; object-fit: cover; border-radius: 14px; box-shadow: 0 0 0 .5px var(--line); animation: r-grow 360ms var(--pop) both; }
 
-.r-answer {
-  padding: 10px 14px 12px;
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--accent) 13%, var(--bubble));
-  box-shadow: inset 0 0 0 .5px color-mix(in srgb, var(--accent) 45%, transparent);
-}
-.r-answer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px; color: var(--accent); font-size: 12px; font-weight: 650; }
-.r-answer-head .r-icon-btn { width: 24px; height: 24px; margin-right: -6px; color: var(--accent); }
-.r-answer-head .r-icon-btn[data-done="true"] { color: var(--ok); }
+.r-ai { align-self: flex-start; max-width: 94%; display: flex; flex-direction: column; gap: 4px; animation: r-from-left 380ms var(--spring) both; }
+.r-ai .r-bubble { padding: 10px 14px; border-radius: 20px 20px 20px 6px; background: var(--bubble); box-shadow: inset 0 0 0 .5px var(--line-soft); }
+.r-ai-answer .r-bubble { background: color-mix(in srgb, var(--accent) 12%, var(--bubble)); box-shadow: inset 0 0 0 .5px color-mix(in srgb, var(--accent) 38%, transparent); }
+.r-answer-label { margin-bottom: 3px; color: var(--accent); font-size: 12px; font-weight: 700; }
+.r[data-bubbles="false"] .r-ai { max-width: 100%; }
+.r[data-bubbles="false"] .r-ai .r-bubble { padding: 0 2px; background: none; box-shadow: none; }
+.r[data-bubbles="false"] .r-ai-answer .r-bubble { padding: 10px 14px; border-radius: 16px; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.r[data-bubbles="false"] .r-you .r-bubble { border-radius: 16px; }
+.r-tools { display: flex; align-items: center; gap: 2px; height: 26px; padding-left: 4px; overflow: hidden; opacity: 0; transition: opacity var(--fast) var(--ease), height 260ms var(--spring); }
+.r-ai:not([data-latest="true"]) .r-tools { height: 0; }
+.r-ai:hover .r-tools, .r-ai[data-latest="true"] .r-tools, .r-tools:focus-within { height: 26px; opacity: 1; }
+.r-ai:not([data-latest="true"]) .r-retry { display: none; }
+.r-tool { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 8px; background: none; color: var(--faint); transition: background var(--fast) var(--ease), color var(--fast) var(--ease); }
+.r-tool:hover { background: var(--hover); color: var(--text); }
+.r-tool svg { width: 14px; height: 14px; }
+.r-tool[data-done="true"] { color: var(--ok); }
+.r-time { color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.r-you .r-time { padding-right: 4px; }
+.r-tools .r-time { margin-left: 4px; }
 
-.r-action { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12.5px; }
-.r-action svg { width: 14px; height: 14px; color: var(--ok); stroke-width: 2.2; }
-.r-note { align-self: center; color: var(--faint); font-size: 12px; text-align: center; }
-.r-divider { display: flex; align-items: center; gap: 10px; margin: 4px 0; color: var(--faint); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.r-action { display: flex; align-items: center; gap: 7px; padding-left: 4px; color: var(--muted); font-size: 12.5px; animation: r-fade 300ms var(--ease) both; }
+.r-action svg { width: 14px; height: 14px; color: var(--ok); stroke-width: 2.2; animation: r-grow 320ms var(--pop) both; }
+.r-note { align-self: center; color: var(--faint); font-size: 12px; text-align: center; animation: r-fade 300ms var(--ease) both; }
+.r-divider { display: flex; align-items: center; gap: 10px; margin: 4px 0; color: var(--faint); font-size: 12px; font-weight: 500; white-space: nowrap; animation: r-fade 300ms var(--ease) both; }
 .r-divider i { flex: 1; height: .5px; background: var(--line); }
 .r-divider time { font-variant-numeric: tabular-nums; }
 .r-error {
@@ -4080,13 +4194,14 @@ const STYLE_PANEL = `
   background: color-mix(in srgb, var(--danger) 13%, var(--bubble));
   box-shadow: inset 0 0 0 .5px color-mix(in srgb, var(--danger) 40%, transparent);
   font-size: 13px;
+  animation: r-rise 360ms var(--spring) both;
 }
 .r-error svg { margin-top: 2px; color: var(--danger); }
-.r-thinking { display: flex; align-items: center; gap: 9px; color: var(--accent); font-size: 12.5px; animation: r-fade var(--med) var(--ease); }
+.r-thinking { display: flex; align-items: center; gap: 9px; padding-left: 4px; color: var(--accent); font-size: 12.5px; animation: r-from-left 360ms var(--spring) both; }
 .r-thinking span { color: var(--muted); }
 
-.r-foot { flex: none; display: grid; gap: 8px; padding: 8px 12px 12px; }
-.r-actions { display: grid; grid-template-columns: 1fr 1fr 1fr 1.3fr; gap: 5px; }
+.r-foot { flex: none; display: grid; gap: 8px; padding: 6px 12px 12px; }
+.r-actions { display: grid; grid-template-columns: 1fr 1fr 1fr 1.3fr; gap: 6px; }
 .r-act {
   position: relative;
   height: 34px;
@@ -4097,10 +4212,10 @@ const STYLE_PANEL = `
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
-  transition: border-color var(--fast) var(--ease), background var(--fast) var(--ease), transform var(--fast) var(--ease);
+  transition: background var(--fast) var(--ease), transform 200ms var(--pop);
 }
 .r-act:hover:not(:disabled) { background: var(--fill-strong); }
-.r-act:active:not(:disabled) { transform: scale(.96); }
+.r-act:active:not(:disabled) { transform: scale(.94); }
 .r-act-primary { background: var(--accent); color: var(--on-accent); }
 .r-act-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 86%, #fff); }
 .r-badge {
@@ -4113,27 +4228,49 @@ const STYLE_PANEL = `
   background: var(--accent);
   color: var(--on-accent);
   font: 700 10.5px/16px var(--font);
-  animation: r-in var(--fast) var(--ease);
+  animation: r-grow 260ms var(--pop) both;
 }
+
+.r-tray { display: flex; gap: 8px; padding: 2px 2px 0; }
+.r-thumb { position: relative; animation: r-grow 320ms var(--pop) both; }
+.r-thumb img { display: block; width: 58px; height: 58px; object-fit: cover; border-radius: 14px; box-shadow: 0 0 0 .5px var(--line); }
+.r-thumb button {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--text);
+  color: var(--surface);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .25);
+}
+.r-thumb button svg { width: 11px; height: 11px; stroke-width: 2.6; }
 
 .r-compose {
   display: flex;
   align-items: flex-end;
-  gap: 6px;
-  padding: 4px 4px 4px 14px;
-  border-radius: 21px;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 22px;
   background: var(--field);
   box-shadow: inset 0 0 0 .5px var(--line);
-  transition: box-shadow var(--fast) var(--ease);
+  transition: box-shadow var(--med) var(--ease);
 }
-.r-compose:focus-within { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 70%, transparent); }
+.r-compose:focus-within { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 70%, transparent), 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent); }
+.r-attach { flex: none; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--muted); transition: background var(--fast) var(--ease), color var(--fast) var(--ease), transform var(--fast) var(--ease); }
+.r-attach:hover { background: var(--hover); color: var(--text); }
+.r-attach:active { transform: scale(.9) rotate(-12deg); }
 .r-mode {
   align-self: center;
   display: inline-flex;
   align-items: center;
   gap: 3px;
   height: 22px;
-  margin-left: -8px;
   padding: 0 5px 0 9px;
   border: 0;
   border-radius: 999px;
@@ -4141,20 +4278,21 @@ const STYLE_PANEL = `
   color: var(--accent);
   font-size: 12px;
   font-weight: 650;
-  animation: r-in var(--fast) var(--ease);
+  animation: r-grow 260ms var(--pop) both;
 }
 .r-mode svg { width: 12px; height: 12px; stroke-width: 2.2; }
 .r-input {
   flex: 1;
   min-width: 0;
-  min-height: 30px;
-  max-height: 120px;
-  padding: 5px 0;
+  min-height: 32px;
+  max-height: 140px;
+  padding: 6px 4px;
   border: 0;
   background: none;
   line-height: 20px;
   resize: none;
   scrollbar-width: none;
+  transition: height 160ms var(--ease);
 }
 .r-input::placeholder { color: var(--faint); }
 .r-input:focus-visible { outline: none; }
@@ -4162,18 +4300,84 @@ const STYLE_PANEL = `
   flex: none;
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   border: 0;
   border-radius: 50%;
   background: var(--accent);
   color: var(--on-accent);
-  transition: opacity var(--fast) var(--ease), background var(--fast) var(--ease);
+  transition: opacity var(--fast) var(--ease), background var(--fast) var(--ease), transform 260ms var(--pop);
 }
 .r-send svg { stroke-width: 2.2; }
-.r-send[data-empty="true"]:not([data-stop="true"]) { opacity: .4; }
+.r-send:active { transform: scale(.88); }
+.r-send[data-empty="true"]:not([data-stop="true"]) { opacity: .4; transform: scale(.92); }
 .r-send[data-stop="true"] { background: var(--text); color: var(--surface); }
+
+.r-scrim { position: absolute; inset: 0; z-index: 4; }
+.r-menu {
+  position: absolute;
+  top: 56px;
+  right: 12px;
+  z-index: 5;
+  width: min(270px, calc(100% - 24px));
+  max-height: calc(100% - 72px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 18px;
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(40px) saturate(200%);
+  backdrop-filter: blur(40px) saturate(200%);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .3), 0 0 0 .5px var(--hairline), inset 0 .5px 0 var(--hi);
+  transform-origin: 85% 0;
+  animation: r-pop 300ms var(--pop) both;
+}
+.r[data-solid="true"] .r-menu { background: var(--surface); }
+.r-menu-scroll { overflow-y: auto; padding: 6px; scrollbar-width: thin; }
+.r-menu-group + .r-menu-group { margin-top: 4px; padding-top: 4px; border-top: .5px solid var(--line); }
+.r-menu-head { display: flex; justify-content: space-between; padding: 6px 10px 4px; color: var(--muted); font-size: 11.5px; font-weight: 650; }
+.r-menu-head em { color: var(--faint); font-style: normal; font-weight: 500; }
+.r-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  text-align: left;
+  transition: background var(--fast) var(--ease);
+}
+.r-menu-item:hover { background: var(--hover); }
+.r-menu-item span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.r-menu-item svg { width: 15px; height: 15px; color: var(--accent); stroke-width: 2.2; opacity: 0; transform: scale(.6); transition: opacity var(--fast) var(--ease), transform 260ms var(--pop); }
+.r-menu-item[aria-checked="true"] { font-weight: 650; }
+.r-menu-item[aria-checked="true"] svg { opacity: 1; transform: none; }
+.r-menu-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-top: .5px solid var(--line); color: var(--muted); font-size: 12.5px; }
+.r-menu-foot .r-seg { min-width: 0; flex: 1; max-width: 180px; }
+.r-menu-link { padding: 11px 12px; border: 0; border-top: .5px solid var(--line); background: none; color: var(--accent); font-weight: 600; text-align: left; transition: background var(--fast) var(--ease); }
+.r-menu-link:hover { background: var(--hover); }
+
+.r-drop {
+  position: absolute;
+  inset: 10px;
+  z-index: 6;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  border: 2px dashed color-mix(in srgb, var(--accent) 70%, transparent);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--glass));
+  color: var(--accent);
+  font-weight: 650;
+  pointer-events: none;
+  animation: r-pop 240ms var(--pop) both;
+}
+.r-drop svg { width: 28px; height: 28px; }
 
 .r-launcher {
   position: fixed;
@@ -4183,115 +4387,99 @@ const STYLE_PANEL = `
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  height: 36px;
+  height: 38px;
   padding: 0 16px 0 14px;
   border: 0;
-  border-radius: 18px;
+  border-radius: 19px;
   background: var(--glass);
   -webkit-backdrop-filter: blur(30px) saturate(180%);
   backdrop-filter: blur(30px) saturate(180%);
   box-shadow: var(--shadow), 0 0 0 .5px var(--hairline), inset 0 .5px 0 var(--hi);
   font-weight: 650;
-  animation: r-in var(--med) var(--ease);
+  animation: r-rise 420ms var(--spring) both;
+  transition: transform 200ms var(--pop);
 }
+.r-launcher:hover { transform: translateY(-2px); }
 .r-launcher i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); transition: background var(--med) var(--ease); }
 .r-launcher[data-auto="true"] i { background: var(--ok); }
 
 @media (max-width: 460px) {
-  .r-panel { right: 8px; bottom: 8px; width: calc(100vw - 16px); height: min(640px, calc(100vh - 16px)); }
+  .r-panel { right: 8px; bottom: 8px; width: calc(100vw - 16px); height: min(var(--panel-h, 640px), calc(100vh - 16px)); }
 }
 `;
 
 const STYLE_VIEWS = `
 .r-subhead {
   flex: none;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  gap: 4px;
-  height: 44px;
+  height: 46px;
   padding: 0 8px 0 4px;
-  border-bottom: 1px solid var(--line-soft);
 }
-.r-subhead h2 { flex: 1; margin: 0; font-size: 14px; font-weight: 650; }
-.r-back { display: inline-flex; align-items: center; gap: 2px; height: 30px; padding: 0 10px 0 4px; border: 0; border-radius: 999px; background: none; color: var(--accent); font-weight: 500; }
+.r-subhead h2 { margin: 0; font-size: 15px; font-weight: 650; text-align: center; animation: r-fade var(--med) var(--ease); }
+.r-subhead-gap { justify-self: end; }
+.r-back { justify-self: start; display: inline-flex; align-items: center; gap: 2px; height: 32px; padding: 0 10px 0 4px; border: 0; border-radius: 999px; background: none; color: var(--accent); font-weight: 500; transition: background var(--fast) var(--ease), transform var(--fast) var(--ease); }
 .r-back:hover { background: var(--hover); }
+.r-back:active { transform: scale(.95); }
+.r-back svg { width: 18px; height: 18px; stroke-width: 2.2; }
 
-.r-tabs {
-  position: relative;
-  flex: none;
-  display: flex;
-  gap: 2px;
-  padding: 6px 10px 0;
-  overflow-x: auto;
-  border-bottom: 1px solid var(--line-soft);
-  scrollbar-width: none;
-}
-.r-tabs::-webkit-scrollbar { display: none; }
-.r-tab {
-  flex: none;
-  height: 32px;
-  padding: 0 10px;
-  border: 0;
-  background: none;
-  color: var(--muted);
-  font-size: 12.5px;
-  font-weight: 580;
-  transition: color var(--fast) var(--ease);
-}
-.r-tab:hover { color: var(--text); }
-.r-tab[aria-selected="true"] { color: var(--text); }
-.r-tab-line {
-  position: absolute;
-  bottom: -1px;
-  left: 0;
-  height: 2px;
-  border-radius: 1px;
-  background: var(--accent);
-  transition: transform var(--med) var(--ease), width var(--med) var(--ease);
-}
-
-.r-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 14px 20px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
-.r-page { animation: r-in var(--med) var(--ease) both; }
-.r-section { margin-top: 18px; }
-.r-section h3 { margin: 0 0 6px 14px; color: var(--muted); font-size: 12.5px; font-weight: 600; }
-.r-section > p { margin: 6px 14px 0; color: var(--faint); font-size: 12px; line-height: 1.4; }
-.r-group { overflow: hidden; border-radius: var(--r); background: var(--group); }
+.r-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 2px 14px 22px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.r-page { animation: r-rise 360ms var(--spring) both; }
+.r-page[data-dir="in"] { animation: r-push-in var(--sheet) var(--spring) both; }
+.r-page[data-dir="out"] { animation: r-push-out var(--sheet) var(--spring) both; }
+.r-section { margin-top: 20px; }
+.r-section:first-child { margin-top: 8px; }
+.r-section h3 { margin: 0 0 6px 16px; color: var(--muted); font-size: 12.5px; font-weight: 600; }
+.r-section > p { margin: 7px 16px 0; color: var(--faint); font-size: 12px; line-height: 1.4; }
+.r-group { overflow: hidden; border-radius: 14px; background: var(--group); box-shadow: inset 0 0 0 .5px var(--line-soft); }
 .r-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 44px;
-  padding: 6px 12px 6px 14px;
+  min-height: 46px;
+  padding: 6px 12px 6px 16px;
 }
-.r-row + .r-row { background: linear-gradient(var(--line), var(--line)) 14px 0 / 100% .5px no-repeat; }
+.r-row + .r-row { background: linear-gradient(var(--line), var(--line)) 16px 0 / 100% .5px no-repeat; }
+.r-nav + .r-nav { background: linear-gradient(var(--line), var(--line)) 54px 0 / 100% .5px no-repeat; }
 .r-row[data-stack="true"] { flex-direction: column; align-items: stretch; gap: 8px; padding-block: 10px; }
 .r-row-label { flex: 1; min-width: 0; }
 .r-row-label small { display: block; margin-top: 1px; color: var(--muted); font-size: 12px; line-height: 1.35; }
 label.r-row { cursor: pointer; }
-button.r-row { width: 100%; border: 0; background: none; text-align: left; transition: background var(--fast) var(--ease); }
-button.r-row:hover { background: var(--hover); }
-.r-row-action { justify-content: center; color: var(--accent); font-weight: 500; }
-.r-row-danger { color: var(--danger); }
+button.r-row, a.r-row { width: 100%; border: 0; background-color: transparent; color: inherit; text-align: left; text-decoration: none; transition: background-color var(--fast) var(--ease); }
+button.r-row:hover, a.r-row:hover { background-color: var(--hover); }
+button.r-row:active, a.r-row:active { background-color: var(--fill-strong); }
+.r-row-action { justify-content: center; color: var(--accent) !important; font-weight: 500; }
+.r-row-danger { color: var(--danger) !important; }
+
+.r-nav { gap: 12px; padding-left: 12px; }
+.r-nav-icon { flex: none; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; background: var(--tint); color: #fff; box-shadow: inset 0 .5px 0 rgba(255, 255, 255, .25); }
+.r-nav-icon svg { width: 17px; height: 17px; stroke-width: 1.9; }
+.r-nav-detail { overflow: hidden; max-width: 46%; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.r-nav > svg:last-child { width: 15px; height: 15px; color: var(--faint); stroke-width: 2.2; transition: transform var(--fast) var(--ease); }
+.r-nav:hover > svg:last-child { transform: translateX(2px); }
 
 .r-field {
   width: 100%;
   min-width: 0;
-  height: 32px;
-  padding: 0 10px;
+  height: 34px;
+  padding: 0 11px;
   border: 0;
-  border-radius: var(--r-sm);
+  border-radius: 10px;
   background: var(--fill);
-  transition: box-shadow var(--fast) var(--ease);
+  transition: box-shadow var(--med) var(--ease), background var(--fast) var(--ease);
 }
-.r-field:focus { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 65%, transparent); }
+.r-field:focus { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 65%, transparent), 0 0 0 5px color-mix(in srgb, var(--accent) 14%, transparent); }
 .r-field::placeholder { color: var(--faint); }
 .r-field:invalid { box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 65%, transparent); }
 .r-field-mono { font: 12.5px var(--mono); }
 .r-inline { display: flex; align-items: center; gap: 6px; }
 .r-inline .r-field { flex: 1; }
+.r-slider { flex: 1; max-width: 200px; }
 .r-number { width: 96px; text-align: right; font-variant-numeric: tabular-nums; -moz-appearance: textfield; }
 .r-number::-webkit-inner-spin-button, .r-number::-webkit-outer-spin-button { margin: 0; -webkit-appearance: none; }
 .r-unit { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.r-keycaps { display: inline-flex; gap: 3px; color: var(--faint); font-size: 12.5px; }
 
 .r-small-btn {
   flex: none;
@@ -4299,45 +4487,48 @@ button.r-row:hover { background: var(--hover); }
   align-items: center;
   gap: 5px;
   height: 32px;
-  padding: 0 12px;
+  padding: 0 13px;
   border: 0;
   border-radius: 999px;
   background: var(--fill);
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
-  transition: background var(--fast) var(--ease);
+  transition: background var(--fast) var(--ease), transform 200ms var(--pop);
 }
 .r-small-btn:hover:not(:disabled) { background: var(--fill-strong); }
+.r-small-btn:active:not(:disabled) { transform: scale(.95); }
 .r-small-btn svg { width: 14px; height: 14px; }
 
 .r-switch {
   position: relative;
   flex: none;
-  width: 44px;
-  height: 26px;
+  width: 50px;
+  height: 30px;
   margin: 0;
-  border-radius: 13px;
+  border-radius: 15px;
   background: var(--fill-strong);
   appearance: none;
   -webkit-appearance: none;
   cursor: pointer;
-  transition: background var(--med) var(--ease);
+  transition: background 260ms var(--ease);
 }
 .r-switch::after {
   content: "";
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
+  width: 26px;
+  height: 26px;
+  border-radius: 13px;
   background: #fff;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, .18), 0 0 0 .5px rgba(0, 0, 0, .06);
-  transition: transform var(--med) var(--ease);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, .15), 0 1px 1px rgba(0, 0, 0, .16), 0 0 0 .5px rgba(0, 0, 0, .04);
+  transition: transform 360ms var(--pop), width 180ms var(--ease);
 }
-.r-switch:checked { background: var(--accent); }
-.r-switch:checked::after { transform: translateX(18px); }
+.r-switch:active::after { width: 32px; }
+.r-switch:checked { background: var(--ok); }
+.r-switch:checked::after { transform: translateX(20px); }
+.r-switch:checked:active::after { transform: translateX(14px); }
 
 .r-seg {
   position: relative;
@@ -4346,7 +4537,7 @@ button.r-row:hover { background: var(--hover); }
   grid-template-columns: repeat(var(--n), minmax(0, 1fr));
   min-width: 170px;
   padding: 2px;
-  border-radius: 9px;
+  border-radius: 10px;
   background: var(--fill);
 }
 .r-seg-wide { width: 100%; }
@@ -4356,36 +4547,30 @@ button.r-row:hover { background: var(--hover); }
   bottom: 2px;
   left: 2px;
   width: calc((100% - 4px) / var(--n));
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--thumb);
   box-shadow: 0 3px 8px rgba(0, 0, 0, .12), 0 0 0 .5px rgba(0, 0, 0, .04);
   transform: translateX(calc(100% * var(--i, 0)));
-  transition: transform var(--med) var(--ease);
+  transition: transform 380ms var(--spring);
 }
 .r-seg button {
   position: relative;
   z-index: 1;
-  height: 26px;
+  height: 28px;
   padding: 0 8px;
   border: 0;
   background: none;
   color: var(--muted);
   font-size: 12.5px;
   font-weight: 600;
+  white-space: nowrap;
   transition: color var(--fast) var(--ease);
 }
 .r-seg button[aria-checked="true"] { color: var(--text); }
 
-.r-swatches { display: flex; gap: 10px; }
-.r-swatch {
-  position: relative;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: var(--c);
-}
+.r-swatches { display: flex; gap: 12px; }
+.r-swatch { position: relative; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%; background: var(--c); transition: transform 240ms var(--pop); }
+.r-swatch:hover { transform: scale(1.08); }
 .r-swatch::after {
   content: "";
   position: absolute;
@@ -4393,68 +4578,80 @@ button.r-row:hover { background: var(--hover); }
   border: 2px solid var(--c);
   border-radius: 50%;
   opacity: 0;
-  transform: scale(.85);
-  transition: opacity var(--fast) var(--ease), transform var(--med) var(--ease);
+  transform: scale(.8);
+  transition: opacity var(--fast) var(--ease), transform 320ms var(--pop);
 }
 .r-swatch[aria-checked="true"]::after { opacity: 1; transform: none; }
 
-.r-range { flex: 1; accent-color: var(--accent); }
+.r-range { flex: 1; min-width: 0; accent-color: var(--accent); }
 
 .r-key {
   min-width: 92px;
   height: 30px;
   padding: 0 12px;
   border: 0;
-  border-radius: var(--r-sm);
+  border-radius: 8px;
   background: var(--fill);
   box-shadow: inset 0 -1.5px 0 var(--line);
   font-size: 12.5px;
   font-weight: 650;
   transition: box-shadow var(--fast) var(--ease), color var(--fast) var(--ease);
 }
-.r-key[data-recording="true"] { box-shadow: 0 0 0 2px var(--accent); color: var(--accent); }
+.r-key[data-recording="true"] { box-shadow: 0 0 0 2px var(--accent); color: var(--accent); animation: r-breathe 1.2s var(--ease) infinite; }
 .r-key[data-empty="true"] { color: var(--faint); }
+@keyframes r-breathe { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 30%, transparent); } }
 
 .r-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.r-stat { padding: 10px 12px; }
+.r-stat { padding: 10px 14px; }
 .r-stat:nth-child(3n + 2), .r-stat:nth-child(3n + 3) { box-shadow: inset .5px 0 0 var(--line); }
 .r-stat:nth-child(n + 4) { border-top: .5px solid var(--line); }
-.r-stat b { display: block; font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.r-stat b { display: block; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .r-stat span { color: var(--muted); font-size: 11.5px; }
 
 .r-sites { margin: 0; padding: 0; list-style: none; }
-.r-sites li { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 14px; color: var(--muted); }
-.r-sites li + li { background: linear-gradient(var(--line), var(--line)) 14px 0 / 100% .5px no-repeat; }
-.r-sites li[data-current="true"] { color: var(--text); font-weight: 580; }
+.r-sites li { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 6px 16px; color: var(--muted); }
+.r-sites li + li { background: linear-gradient(var(--line), var(--line)) 16px 0 / 100% .5px no-repeat; }
+.r-sites li[data-current="true"] { color: var(--text); font-weight: 600; }
 .r-sites li svg { width: 14px; height: 14px; color: var(--ok); stroke-width: 2.2; }
 .r-sites li span { flex: 1; }
 .r-sites li em { color: var(--faint); font-size: 12px; font-style: normal; }
 
-.r-version { margin: 20px 14px 0; color: var(--faint); font-size: 12px; }
+.r-about { display: grid; justify-items: center; gap: 2px; padding: 26px 0 6px; }
+.r-about b { font-size: 26px; font-weight: 750; letter-spacing: -.035em; }
+.r-about span { color: var(--muted); font-size: 13px; }
+.r-none { margin: 30px 16px; color: var(--faint); text-align: center; }
 
-.r-search { position: relative; flex: none; padding: 10px 12px 6px; }
-.r-search svg { position: absolute; top: 18px; left: 21px; width: 14px; height: 14px; color: var(--faint); }
-.r-search .r-field { padding-left: 30px; }
-.r-chat-list { margin: 0; padding: 4px 6px 12px; list-style: none; }
+.r-search { position: relative; flex: none; padding: 4px 14px 8px; }
+.r-search svg { position: absolute; top: 13px; left: 25px; width: 15px; height: 15px; color: var(--faint); }
+.r-search .r-field { padding-left: 32px; border-radius: 11px; }
+.r-search-settings { padding: 6px 0 0; }
+.r-search-settings svg { top: 15px; left: 11px; }
+
+.r-chat-scroll { padding: 0 8px 14px; }
+.r-chat-group h3 { margin: 14px 10px 4px; color: var(--muted); font-size: 12px; font-weight: 650; }
 .r-chat {
   position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 6px 8px 10px;
-  border-radius: var(--r);
+  padding: 9px 6px 9px 12px;
+  border-radius: 12px;
   cursor: pointer;
-  animation: r-in var(--med) var(--ease) both;
+  animation: r-rise 380ms var(--spring) both;
   transition: background var(--fast) var(--ease);
 }
 .r-chat:hover { background: var(--hover); }
-.r-chat[data-current="true"] { background: var(--raised); }
+.r-chat[data-current="true"] { background: color-mix(in srgb, var(--accent) 13%, transparent); }
 .r-chat-text { flex: 1; min-width: 0; }
-.r-chat-title { display: block; overflow: hidden; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
+.r-chat-title { display: block; overflow: hidden; font-weight: 580; text-overflow: ellipsis; white-space: nowrap; }
 .r-chat-meta { display: block; color: var(--faint); font-size: 11.5px; }
-.r-chat .r-icon-btn { opacity: 0; }
-.r-chat:hover .r-icon-btn, .r-chat .r-icon-btn:focus-visible { opacity: 1; }
-.r-chat-empty { padding: 28px 16px; color: var(--faint); text-align: center; }
+.r-chat-tools { display: flex; opacity: 0; transform: translateX(6px); transition: opacity var(--fast) var(--ease), transform 260ms var(--spring); }
+.r-chat:hover .r-chat-tools, .r-chat-tools:focus-within { opacity: 1; transform: none; }
+.r-chat-tools .r-icon-btn { width: 28px; height: 28px; }
+.r-chat-tools .r-icon-btn svg { width: 15px; height: 15px; }
+.r-chat-tools .r-icon-btn[aria-pressed="true"] { color: var(--accent); background: none; }
+.r-rename { height: 30px; }
+.r-chat-empty { padding: 30px 16px; color: var(--faint); text-align: center; }
 .r-chats-foot { flex: none; display: flex; gap: 6px; padding: 8px 12px 12px; }
 .r-chats-foot .r-small-btn { flex: 1; justify-content: center; }
 `;
@@ -4466,32 +4663,48 @@ const STYLE_ISLAND = `
   --island-muted: var(--muted);
   --island-chip: var(--fill-strong);
   --island-ring: 0 0 0 .5px var(--hairline), inset 0 .5px 0 var(--hi);
+  --glow: 0 0 0 transparent;
   position: fixed;
-  top: 12px;
+  top: 10px;
   left: 50%;
   z-index: 2147483647;
+  isolation: isolate;
   box-sizing: border-box;
-  width: 40px;
-  min-width: 40px;
-  height: 40px;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
   overflow: hidden;
-  border-radius: 20px;
+  border-radius: 22px;
   background: var(--island-bg);
-  -webkit-backdrop-filter: blur(30px) saturate(180%);
-  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(190%);
+  backdrop-filter: blur(30px) saturate(190%);
   color: var(--island-text);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, .22), var(--island-ring);
-  font: 560 13px/1 var(--font);
-  letter-spacing: -.005em;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, .26), var(--island-ring), var(--glow);
+  font: 580 13.5px/1 var(--font);
+  letter-spacing: -.008em;
   opacity: 0;
   pointer-events: none;
-  transform: translate(-50%, -16px) scale(.92);
-  transition: opacity 200ms var(--ease), transform 300ms cubic-bezier(.3, 1.3, .5, 1), width 340ms cubic-bezier(.3, 1.15, .45, 1);
+  transform: translate(-50%, -30px) scale(.5);
+  transition:
+    opacity 220ms var(--ease),
+    transform 560ms cubic-bezier(.3, 1.4, .5, 1),
+    width 520ms cubic-bezier(.3, 1.2, .45, 1),
+    box-shadow 400ms var(--ease);
 }
-.r-island[data-place="bottom"] { top: auto; bottom: 14px; transform: translate(-50%, 16px) scale(.92); }
+.r-island[data-place="bottom"] { top: auto; bottom: 12px; transform: translate(-50%, 30px) scale(.5); }
 .r-island[data-show="true"] { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
 .r-island[data-click="true"] { cursor: pointer; }
 
+.r-island[data-style="siri"] {
+  --island-bg: rgba(12, 13, 17, .74);
+  --island-text: #f4f5f7;
+  --island-muted: rgba(235, 235, 245, .62);
+  --island-chip: rgba(255, 255, 255, .15);
+  --island-ring: 0 0 0 .5px rgba(255, 255, 255, .1), inset 0 1px 0 rgba(255, 255, 255, .14), inset 0 -1px 0 rgba(255, 255, 255, .04);
+  -webkit-backdrop-filter: blur(26px) saturate(220%) brightness(.9);
+  backdrop-filter: blur(26px) saturate(220%) brightness(.9);
+}
+.r-island[data-style="siri"][data-busy="true"] { --glow: 0 0 26px rgba(120, 170, 255, .28), 0 0 44px rgba(255, 120, 170, .16); }
 .r-island[data-style="dark"] {
   --island-bg: rgba(12, 13, 15, .94);
   --island-text: #f1f2f4;
@@ -4508,23 +4721,57 @@ const STYLE_ISLAND = `
 }
 .r[data-solid="true"] .r-island[data-style="glass"] { -webkit-backdrop-filter: none; backdrop-filter: none; --island-bg: var(--surface); }
 
+.r-island-rim {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  padding: 1.5px;
+  border-radius: inherit;
+  overflow: hidden;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  opacity: 0;
+  transition: opacity 400ms var(--ease);
+}
+.r-island-rim::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 640px;
+  height: 640px;
+  margin: -320px 0 0 -320px;
+  background: conic-gradient(#5ac8fa, #7d8bff, #ff6fa8, #ffb340, #5ee6a0, #5ac8fa);
+  animation: r-spin 2.4s linear infinite;
+}
+.r-island[data-style="siri"][data-busy="true"] .r-island-rim { opacity: 1; }
+.r-island[data-style="siri"][data-tone="ok"] .r-island-rim { opacity: .75; }
+.r-island[data-style="siri"][data-tone="ok"] .r-island-rim::before { background: #30d158; animation: none; }
+.r-island[data-style="siri"][data-tone="error"] .r-island-rim { opacity: .85; }
+.r-island[data-style="siri"][data-tone="error"] .r-island-rim::before { background: #ff453a; animation: none; }
+@keyframes r-spin { to { transform: rotate(360deg); } }
+
 .r-island-inner {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
-  height: 40px;
-  padding: 0 15px 0 13px;
+  gap: 10px;
+  height: 44px;
+  padding: 0 16px 0 14px;
   white-space: nowrap;
 }
-.r-island-glyph { position: relative; flex: none; display: grid; place-items: center; width: 14px; height: 16px; color: var(--accent); }
+.r-island-glyph { position: relative; flex: none; display: grid; place-items: center; width: 16px; height: 16px; color: var(--accent); }
 .r-island[data-style="accent"] .r-island-glyph { color: var(--on-accent); }
-.r-island-glyph > * { animation: r-fade var(--fast) var(--ease); }
-.r-island-glyph svg { width: 14px; height: 14px; stroke-width: 2.2; }
+.r-island[data-style="siri"] .r-island-glyph { color: #9cc7ff; }
+.r-island-glyph > * { animation: r-grow 320ms var(--pop) both; }
+.r-island-glyph svg { width: 15px; height: 15px; stroke-width: 2.2; }
 .r-island[data-tone="ok"] .r-island-glyph { color: var(--ok); }
 .r-island[data-tone="error"] .r-island-glyph { color: var(--danger); }
+.r-island[data-style="siri"][data-tone="ok"] .r-island-glyph { color: #5ee6a0; }
+.r-island[data-style="siri"][data-tone="error"] .r-island-glyph { color: #ff6b5f; }
 .r-island[data-style="accent"][data-tone] .r-island-glyph { color: var(--on-accent); }
-.r-island-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.r-island-drop { width: 14px; height: 14px; animation: r-drop 420ms var(--ease) both; }
+.r-island-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.r-island-drop { width: 15px; height: 15px; animation: r-drop 420ms var(--ease) both; }
 .r-island-drop path { fill: currentColor; stroke: none; }
 .r-island-ripple {
   position: absolute;
@@ -4539,14 +4786,32 @@ const STYLE_ISLAND = `
   animation: r-ripple 600ms var(--ease) 360ms both;
 }
 
+.r-orb { position: relative; width: 18px; height: 18px; border-radius: 50%; filter: saturate(1.3); }
+.r-orb i {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  mix-blend-mode: screen;
+  animation: r-orb 2.2s ease-in-out infinite;
+}
+.r-orb i:nth-child(1) { background: radial-gradient(circle at 30% 35%, #5ac8fa, transparent 62%); }
+.r-orb i:nth-child(2) { background: radial-gradient(circle at 70% 40%, #ff6fa8, transparent 62%); animation-delay: -.7s; }
+.r-orb i:nth-child(3) { background: radial-gradient(circle at 50% 75%, #ffb340, transparent 62%); animation-delay: -1.4s; }
+.r-island[data-busy="false"] .r-orb i { animation-duration: 4s; }
+@keyframes r-orb {
+  0%, 100% { transform: rotate(0deg) scale(1); }
+  50% { transform: rotate(180deg) scale(1.18); }
+}
+
 .r-island-text {
   min-width: 0;
-  max-width: 400px;
+  max-width: 410px;
   overflow: hidden;
   text-overflow: ellipsis;
-  animation: r-in 240ms var(--ease) both;
+  animation: r-island-text 360ms var(--spring) both;
 }
-.r-island-text b { font-weight: 700; }
+@keyframes r-island-text { from { opacity: 0; transform: translateY(5px); filter: blur(3px); } to { opacity: 1; transform: none; filter: none; } }
+.r-island-text b { font-weight: 720; }
 .r-island-text kbd {
   display: inline-block;
   min-width: 18px;
@@ -4560,36 +4825,71 @@ const STYLE_ISLAND = `
 }
 .r-island-action {
   flex: none;
-  height: 26px;
-  margin-right: -7px;
-  padding: 0 11px;
+  height: 28px;
+  margin-right: -8px;
+  padding: 0 12px;
   border: 0;
-  border-radius: 13px;
+  border-radius: 14px;
   background: var(--island-chip);
   color: var(--island-text);
   font: 650 12px var(--font);
   cursor: pointer;
-  transition: filter var(--fast) var(--ease);
+  animation: r-grow 300ms var(--pop) both;
+  transition: filter var(--fast) var(--ease), transform 200ms var(--pop);
 }
-.r-island-action:hover { filter: brightness(1.15); }
-.r-island-bar { position: absolute; left: 14px; right: 14px; bottom: 4px; height: 2px; border-radius: 1px; background: var(--island-muted); opacity: .6; transform-origin: left; }
+.r-island-action:hover { filter: brightness(1.2); }
+.r-island-action:active { transform: scale(.93); }
+.r-island-bar { position: absolute; left: 16px; right: 16px; bottom: 5px; height: 2px; border-radius: 1px; background: var(--island-muted); opacity: .6; transform-origin: left; }
 `;
 
 const STYLE_SETUP = `
-.r-panel[data-setup="true"] .r-head .r-icon-btn:not([title="Hide"]) { display: none; }
+.r-panel[data-setup="true"] .r-head-tools .r-icon-btn:not([title="Hide"]),
+.r-panel[data-setup="true"] .r-model-btn { display: none; }
+
+.r-setup-progress { flex: none; height: 3px; margin: 0 18px; border-radius: 2px; background: var(--fill); overflow: hidden; }
+.r-setup-progress i { display: block; height: 100%; border-radius: 2px; background: var(--accent); transform: scaleX(var(--p, .2)); transform-origin: left; transition: transform 520ms var(--spring); }
 
 .r-setup-scroll { display: flex; flex-direction: column; padding: 0 16px 16px; }
 .r-setup-body { flex: 1; display: flex; flex-direction: column; }
-.r-setup-page { padding-top: 22px; animation: r-setup-next var(--slow) var(--ease) both; }
-.r-setup-body[data-dir="back"] .r-setup-page { animation-name: r-setup-back; }
-.r-setup-page > h2 { margin: 0 0 6px 2px; font-size: 21px; font-weight: 720; letter-spacing: -.03em; }
-.r-setup-page > p { margin: 0 2px 14px; color: var(--muted); }
+.r-setup-page { padding-top: 22px; animation: r-push-in var(--sheet) var(--spring) both; }
+.r-setup-body[data-dir="back"] .r-setup-page { animation-name: r-push-out; }
+.r-setup-page > h2 { margin: 0 0 6px 2px; font-size: 24px; font-weight: 750; letter-spacing: -.035em; }
+.r-setup-page > p { margin: 0 2px 16px; color: var(--muted); }
 .r-setup-page > .r-section:first-of-type { margin-top: 4px; }
 
 .r-setup-fact { align-items: baseline; gap: 14px; }
-.r-setup-fact span { flex: none; width: 92px; color: var(--muted); }
+.r-setup-fact span { flex: none; width: 82px; color: var(--muted); }
 .r-setup-fact b { flex: 1; font-weight: 560; }
-.r-setup-keys { margin: 0 2px 4px; padding: 12px 14px; border-radius: var(--r); background: var(--group); }
+.r-setup-keys { margin: 0 2px 4px; padding: 14px 16px; border-radius: 14px; background: var(--group); box-shadow: inset 0 0 0 .5px var(--line-soft); }
+.r-setup-result { min-height: 18px; margin: 8px 16px 0; color: var(--muted); font-size: 12.5px; }
+.r-setup-result[data-tone="ok"] { color: var(--ok); animation: r-fade var(--med) var(--ease); }
+.r-setup-result[data-tone="error"] { color: var(--danger); animation: r-fade var(--med) var(--ease); }
+
+.r-choices { display: grid; gap: 8px; }
+.r-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 13px 14px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--group);
+  box-shadow: inset 0 0 0 .5px var(--line-soft);
+  text-align: left;
+  animation: r-rise 420ms var(--spring) both;
+  transition: box-shadow var(--med) var(--ease), background var(--med) var(--ease), transform 200ms var(--pop);
+}
+.r-choice:nth-child(2) { animation-delay: 50ms; }
+.r-choice:nth-child(3) { animation-delay: 100ms; }
+.r-choice:active { transform: scale(.98); }
+.r-choice[aria-checked="true"] { background: color-mix(in srgb, var(--accent) 12%, var(--group)); box-shadow: inset 0 0 0 1.5px var(--accent); }
+.r-choice-dot { position: relative; flex: none; width: 20px; height: 20px; margin-top: 1px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--faint); transition: box-shadow var(--med) var(--ease); }
+.r-choice-dot::after { content: ""; position: absolute; inset: 5px; border-radius: 50%; background: var(--accent); transform: scale(0); transition: transform 320ms var(--pop); }
+.r-choice[aria-checked="true"] .r-choice-dot { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.r-choice[aria-checked="true"] .r-choice-dot::after { transform: none; }
+.r-choice-text b { display: block; font-size: 14.5px; font-weight: 650; }
+.r-choice-text small { display: block; margin-top: 2px; color: var(--muted); font-size: 12.5px; line-height: 1.35; }
 
 .r-setup-foot {
   flex: none;
@@ -4597,28 +4897,24 @@ const STYLE_SETUP = `
   align-items: center;
   gap: 10px;
   padding: 10px 12px 12px;
-  border-top: 1px solid var(--line-soft);
+  border-top: .5px solid var(--line);
 }
 .r-setup-foot .r-small-btn[hidden] { display: inline-flex !important; visibility: hidden; }
-.r-setup-dots { flex: 1; display: flex; justify-content: center; gap: 6px; }
-.r-setup-dots i { width: 6px; height: 6px; border-radius: 3px; background: var(--fill-strong); transition: width var(--med) var(--ease), background var(--med) var(--ease); }
-.r-setup-dots i[data-on="true"] { width: 16px; background: var(--accent); }
+.r-setup-count { flex: 1; color: var(--faint); font-size: 12px; text-align: center; font-variant-numeric: tabular-nums; }
 .r-setup-next {
   flex: none;
-  height: 34px;
-  padding: 0 16px;
+  height: 36px;
+  padding: 0 18px;
   border: 0;
   border-radius: 999px;
   background: var(--accent);
   color: var(--on-accent);
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 650;
-  transition: transform var(--fast) var(--ease), opacity var(--fast) var(--ease);
+  transition: transform 220ms var(--pop), opacity var(--fast) var(--ease), filter var(--fast) var(--ease);
 }
-.r-setup-next:active:not(:disabled) { transform: scale(.96); }
-
-@keyframes r-setup-next { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
-@keyframes r-setup-back { from { opacity: 0; transform: translateX(-18px); } to { opacity: 1; transform: none; } }
+.r-setup-next:hover:not(:disabled) { filter: brightness(1.08); }
+.r-setup-next:active:not(:disabled) { transform: scale(.94); }
 `;
 
 const STYLES = [STYLE_TOKENS, STYLE_PANEL, STYLE_VIEWS, STYLE_ISLAND, STYLE_SETUP].join("\n");
@@ -4734,7 +5030,8 @@ function createIsland(root) {
   const action = h("button", { class: "r-island-action", type: "button", hidden: true });
   const bar = h("span", { class: "r-island-bar", hidden: true });
   const inner = h("div", { class: "r-island-inner" }, glyph, text, action);
-  const el = h("div", { class: "r-island", role: "status", "aria-live": "polite", "data-show": "false" }, inner, bar);
+  const el = h("div", { class: "r-island", role: "status", "aria-live": "polite", "data-show": "false", "data-busy": "false" },
+    h("span", { class: "r-island-rim", "aria-hidden": "true" }), inner, bar);
   root.append(el);
 
   let timer = null;
@@ -4742,19 +5039,23 @@ function createIsland(root) {
   let state = { key: "", glyph: "", busy: false };
   let lastIdle = "";
 
-  const prefs = () => ({ ...CONFIG.defaults.island, ...Settings.load().island });
+  const prefs = () => {
+    const settings = Settings.load();
+    return { ...CONFIG.defaults.island, ...settings.island, enabled: settings.island.enabled && !settings.stealth };
+  };
 
+  const orb = () => h("span", { class: "r-orb" }, h("i"), h("i"), h("i"));
   const drop = () => {
     const svg = icon("drop");
     svg.setAttribute("class", "r-island-drop");
-    return svg;
+    return [svg, h("span", { class: "r-island-ripple" })];
   };
 
   const glyphs = {
-    busy: () => rainfall(),
+    busy: () => el.dataset.style === "siri" ? orb() : rainfall(),
     ok: () => icon("check"),
     error: () => icon("warn"),
-    drop: () => [drop(), h("span", { class: "r-island-ripple" })],
+    drop: () => el.dataset.style === "siri" ? orb() : drop(),
     dot: () => h("span", { class: "r-island-dot" })
   };
 
@@ -4766,16 +5067,21 @@ function createIsland(root) {
   function measure() {
     el.style.width = "auto";
     const natural = Math.ceil(inner.scrollWidth) + 2;
-    const limit = Math.min(460, innerWidth - 24);
+    const limit = Math.min(480, innerWidth - 24);
     return Math.min(natural, limit);
   }
 
   function resize() {
-    const from = el.dataset.show === "true" ? el.getBoundingClientRect().width : 40;
+    const from = el.dataset.show === "true" ? el.getBoundingClientRect().width : 44;
     const to = measure();
     el.style.width = `${from}px`;
     void el.offsetWidth;
     el.style.width = `${to}px`;
+  }
+
+  function setBusy(value) {
+    state.busy = value;
+    el.dataset.busy = String(value);
   }
 
   function hide() {
@@ -4783,6 +5089,7 @@ function createIsland(root) {
     el.dataset.show = "false";
     onClick = null;
     state = { key: "", glyph: "", busy: false };
+    el.dataset.busy = "false";
   }
 
   function show(message, { busy = false, countdown = 0, action: act = null, tone = null, glyph: kind = null, click = null, duration, idle = false, important = false } = {}) {
@@ -4808,7 +5115,8 @@ function createIsland(root) {
     clearTimeout(timer);
     const glyphKind = kind || (busy || countdown ? "busy" : tone || "dot");
     if (glyphKind !== state.glyph) glyph.replaceChildren(...[].concat(glyphs[glyphKind]()));
-    state = { key, glyph: glyphKind, busy: busy || Boolean(countdown) };
+    state = { key, glyph: glyphKind, busy: false };
+    setBusy(busy || Boolean(countdown));
 
     el.dataset.tone = tone || "";
     el.title = key;
@@ -4844,19 +5152,21 @@ function createIsland(root) {
     apply(settings);
     if (!settings.enabled && !options?.action) return;
     clearTimeout(timer);
-    el.style.width = "40px";
+    el.style.width = "44px";
     el.dataset.tone = "";
     state = { key: "", glyph: "drop", busy: false };
-    glyph.replaceChildren(...glyphs.drop());
+    setBusy(true);
+    glyph.replaceChildren(...[].concat(glyphs.drop()));
     text.replaceChildren();
     action.hidden = true;
     bar.hidden = true;
     el.dataset.show = "true";
-    timer = setTimeout(() => show(message, { glyph: "drop", important: true, ...options }), 760);
+    timer = setTimeout(() => show(message, { glyph: "drop", important: true, ...options }), 820);
   }
 
   function settle() {
     if (!state.busy) return;
+    setBusy(false);
     clearTimeout(timer);
     timer = setTimeout(hide, 1400);
   }
@@ -4872,128 +5182,207 @@ function createIsland(root) {
   return { el, show, hide, boot, settle, apply };
 }
 
-function pickElement() {
+function pickElement(current) {
+  const settings = Settings.load();
+  const accent = (CONFIG.ui.accents.find(entry => entry.id === settings.accent) || CONFIG.ui.accents[0]).dark;
+  const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif";
+
   return new Promise(resolve => {
+    const layer = document.createElement("div");
+    Object.assign(layer.style, { position: "fixed", inset: "0", zIndex: "2147483646", pointerEvents: "none" });
+
+    const shade = document.createElement("div");
+    Object.assign(shade.style, { position: "fixed", inset: "0", background: "rgba(10, 12, 16, .28)", opacity: "0", transition: "opacity 160ms ease-out" });
+
+    const was = document.createElement("div");
+    Object.assign(was.style, { position: "fixed", border: "1.5px dashed rgba(255, 255, 255, .55)", borderRadius: "10px", display: "none" });
+
     const box = document.createElement("div");
     Object.assign(box.style, {
       position: "fixed",
-      zIndex: "2147483646",
-      pointerEvents: "none",
-      border: "2px solid #5aa9e6",
-      borderRadius: "8px",
-      background: "rgba(90, 169, 230, .08)",
-      boxShadow: "0 0 0 9999px rgba(0, 0, 0, .3)",
-      transition: "all 140ms cubic-bezier(.2, .7, .2, 1)",
-      opacity: "0"
+      border: `2px solid ${accent}`,
+      borderRadius: "10px",
+      background: `${accent}1f`,
+      boxShadow: "0 0 0 9999px rgba(10, 12, 16, .32)",
+      opacity: "0",
+      transition: "left 120ms ease-out, top 120ms ease-out, width 120ms ease-out, height 120ms ease-out, opacity 120ms ease-out"
     });
 
-    const tip = document.createElement("div");
-    Object.assign(tip.style, {
+    const tag = document.createElement("div");
+    Object.assign(tag.style, {
       position: "fixed",
-      top: "10px",
+      padding: "3px 8px",
+      borderRadius: "6px",
+      background: accent,
+      color: "#fff",
+      font: `600 11.5px/16px ${font}`,
+      whiteSpace: "nowrap",
+      opacity: "0",
+      transition: "opacity 120ms ease-out"
+    });
+
+    const bar = document.createElement("div");
+    Object.assign(bar.style, {
+      position: "fixed",
       left: "50%",
-      transform: "translateX(-50%)",
-      zIndex: "2147483647",
-      pointerEvents: "none",
-      padding: "9px 16px",
-      borderRadius: "999px",
-      background: "#0b0c0e",
-      color: "#f1f2f3",
-      font: "500 13px -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif",
-      boxShadow: "0 10px 30px rgba(0, 0, 0, .32)",
+      bottom: "18px",
+      transform: "translate(-50%, 12px)",
+      display: "flex",
+      gap: "14px",
+      alignItems: "center",
+      padding: "10px 16px",
+      borderRadius: "14px",
+      background: "rgba(22, 23, 27, .9)",
+      backdropFilter: "blur(24px) saturate(180%)",
+      webkitBackdropFilter: "blur(24px) saturate(180%)",
+      color: "#f1f2f4",
+      font: `500 13px ${font}`,
+      boxShadow: "0 14px 34px rgba(0, 0, 0, .35), 0 0 0 .5px rgba(255, 255, 255, .08)",
+      opacity: "0",
+      transition: "opacity 180ms ease-out, transform 220ms ease-out",
       whiteSpace: "nowrap"
     });
-    tip.textContent = "Click the question. Up arrow widens, down narrows, Esc cancels";
-    document.documentElement.append(box, tip);
+    const key = text => `<span style="display:inline-block;min-width:20px;padding:0 6px;margin-right:6px;border-radius:5px;background:rgba(255,255,255,.14);font:600 11px/19px ${font};text-align:center">${text}</span>`;
+    bar.innerHTML = `<span><b>Pick the question</b></span><span>${key("Click")}select</span><span>${key("Scroll")}${key("↑")}${key("↓")}size</span><span>${key("Esc")}cancel</span>`;
 
-    let current = null;
+    layer.append(shade, was, box, tag);
+    document.documentElement.append(layer, bar);
+    requestAnimationFrame(() => {
+      shade.style.opacity = "1";
+      bar.style.opacity = "1";
+      bar.style.transform = "translate(-50%, 0)";
+    });
+
+    if (current?.isConnected) {
+      const rect = current.getBoundingClientRect();
+      Object.assign(was.style, { display: "block", left: `${rect.left - 4}px`, top: `${rect.top - 4}px`, width: `${rect.width + 8}px`, height: `${rect.height + 8}px` });
+    }
+
+    let target = null;
     const trail = [];
 
+    const describe = el => {
+      const name = el.tagName.toLowerCase();
+      const cls = String(el.className?.baseVal ?? el.className ?? "").split(/\s+/).filter(Boolean)[0];
+      const length = clean(el.innerText || el.textContent).length;
+      return `${name}${cls ? `.${cls.slice(0, 28)}` : ""}  ${length.toLocaleString()} chars`;
+    };
+
     const outline = el => {
-      current = el;
+      target = el;
       const rect = el.getBoundingClientRect();
-      Object.assign(box.style, {
-        opacity: "1",
-        left: `${rect.left - 4}px`,
-        top: `${rect.top - 4}px`,
-        width: `${rect.width + 8}px`,
-        height: `${rect.height + 8}px`
-      });
+      Object.assign(box.style, { opacity: "1", left: `${rect.left - 4}px`, top: `${rect.top - 4}px`, width: `${rect.width + 8}px`, height: `${rect.height + 8}px` });
+      tag.textContent = describe(el);
+      const above = rect.top - 28 > 4;
+      Object.assign(tag.style, { opacity: "1", left: `${Math.max(6, Math.min(rect.left - 4, innerWidth - 260))}px`, top: `${above ? rect.top - 28 : rect.bottom + 8}px` });
+    };
+
+    const widen = () => {
+      if (target?.parentElement && target.parentElement !== document.documentElement) {
+        trail.push(target);
+        outline(target.parentElement);
+      }
+    };
+    const narrow = () => {
+      if (trail.length) outline(trail.pop());
     };
 
     const onMove = e => {
-      const el = document.elementFromPoint(e.clientX, e.clientY);
-      if (el && el.id !== HOST_ID && el !== current && el !== tip) {
+      const host = document.getElementById(HOST_ID);
+      const el = document.elementsFromPoint(e.clientX, e.clientY).find(node => node !== host && !layer.contains(node) && node !== bar && !bar.contains(node));
+      if (el && el !== target && !trail.length) outline(el);
+      else if (el && trail.length && !trail[0].contains(el) && !el.contains(trail[0])) {
         trail.length = 0;
         outline(el);
       }
     };
 
+    const onWheel = e => {
+      if (!target) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.deltaY < 0) widen();
+      else narrow();
+    };
+
     const onClick = e => {
       e.preventDefault();
       e.stopPropagation();
-      finish(current);
+      finish(target);
+    };
+
+    const block = e => {
+      e.preventDefault();
+      e.stopPropagation();
     };
 
     const onKey = e => {
       if (e.key === "Escape") {
-        e.preventDefault();
+        block(e);
         finish(null);
-      } else if (e.key === "ArrowUp" && current?.parentElement && current.parentElement !== document.documentElement) {
-        e.preventDefault();
-        trail.push(current);
-        outline(current.parentElement);
-      } else if (e.key === "ArrowDown" && trail.length) {
-        e.preventDefault();
-        outline(trail.pop());
-      } else if (e.key === "Enter" && current) {
-        e.preventDefault();
-        finish(current);
+      } else if (e.key === "ArrowUp") {
+        block(e);
+        widen();
+      } else if (e.key === "ArrowDown") {
+        block(e);
+        narrow();
+      } else if (e.key === "Enter" && target) {
+        block(e);
+        finish(target);
       }
     };
 
     const finish = el => {
       document.removeEventListener("mousemove", onMove, true);
       document.removeEventListener("click", onClick, true);
+      document.removeEventListener("mousedown", block, true);
       document.removeEventListener("keydown", onKey, true);
-      box.remove();
-      tip.remove();
+      window.removeEventListener("wheel", onWheel, { capture: true });
+      shade.style.opacity = "0";
+      box.style.opacity = "0";
+      tag.style.opacity = "0";
+      bar.style.opacity = "0";
+      bar.style.transform = "translate(-50%, 12px)";
+      setTimeout(() => {
+        layer.remove();
+        bar.remove();
+      }, 200);
       resolve(el);
     };
 
     document.addEventListener("mousemove", onMove, true);
     document.addEventListener("click", onClick, true);
+    document.addEventListener("mousedown", block, true);
     document.addEventListener("keydown", onKey, true);
+    window.addEventListener("wheel", onWheel, { capture: true, passive: false });
   });
 }
 
-const SETTINGS_TABS = [
-  ["model", "Model"],
-  ["answering", "Answering"],
-  ["keys", "Keys"],
-  ["look", "Look"],
-  ["site", "Site"],
-  ["data", "Data"]
+const SETTINGS_PAGES = [
+  { id: "model", title: "Model and key", icon: "cpu", tint: "#0a84ff", group: 0, words: "provider claude openai gemini api key base url effort test" },
+  { id: "answering", title: "Answering", icon: "pencil", tint: "#30a46c", group: 0, words: "enter submit delay timing replies answer only memory auto" },
+  { id: "accuracy", title: "Accuracy", icon: "target", tint: "#e5484d", group: 0, words: "wrong mistakes score chance target" },
+  { id: "look", title: "Appearance", icon: "palette", tint: "#f76b15", group: 1, words: "theme dark light accent color glass transparency text size sound volume" },
+  { id: "panel", title: "Panel and chat", icon: "layout", tint: "#0090ff", group: 1, words: "size width bubbles timestamps toolbar header buttons position" },
+  { id: "pill", title: "Status pill", icon: "pill", tint: "#6e7781", group: 1, words: "island toast notifications status position" },
+  { id: "keys", title: "Shortcuts", icon: "keyboard", tint: "#8d8d8d", group: 2, words: "keys hotkey bind toggle panic" },
+  { id: "hiding", title: "Hiding and panic", icon: "shield", tint: "#d6409f", group: 2, words: "stealth hide panic unload launcher private" },
+  { id: "site", title: "This site", icon: "globe", tint: "#12a594", group: 3, words: "tweaks dark mode supported sites" },
+  { id: "data", title: "Chats and usage", icon: "archive", tint: "#ad7f58", group: 3, words: "export delete stats tokens usage reset" },
+  { id: "about", title: "About", icon: "info", tint: "#6e7781", group: 3, words: "version github setup" }
 ];
 
 function createSettings(app) {
   const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
   const capitalize = text => text[0].toUpperCase() + text.slice(1);
-  let current = "model";
+  let stack = ["root"];
+  let query = "";
 
-  const tabButtons = SETTINGS_TABS.map(([id, text]) => h("button", {
-    class: "r-tab",
-    type: "button",
-    role: "tab",
-    text,
-    "data-tab": id,
-    onclick: () => select(id)
-  }));
-  const tabLine = h("span", { class: "r-tab-line", "aria-hidden": "true" });
+  const backButton = h("button", { class: "r-back", type: "button", onclick: () => back() }, icon("back"), h("span"));
+  const titleText = h("h2");
   const scroll = h("div", { class: "r-scroll" });
   const el = h("section", { class: "r-view r-view-settings", "data-active": "false", "aria-label": "Settings" },
-    UI.subhead("Settings", () => app.showView("main")),
-    h("div", { class: "r-tabs", role: "tablist" }, tabButtons, tabLine),
+    h("header", { class: "r-subhead" }, backButton, titleText, h("span", { class: "r-subhead-gap" })),
     scroll);
 
   function save(patch) {
@@ -5007,19 +5396,84 @@ function createSettings(app) {
     return save({ providers: { ...settings.providers, [settings.provider]: { ...settings.providers[settings.provider], ...patch } } });
   }
 
-  function moveLine() {
-    const tab = tabButtons.find(button => button.dataset.tab === current);
-    if (!tab || !tab.offsetWidth) return;
-    tabLine.style.width = `${tab.offsetWidth - 16}px`;
-    tabLine.style.transform = `translateX(${tab.offsetLeft + 8}px)`;
+  function saveLook(patch) {
+    const look = Settings.load().look;
+    return save({ look: { ...look, ...patch, toolbar: { ...look.toolbar, ...patch.toolbar } } });
   }
 
-  function select(id) {
-    current = id;
-    tabButtons.forEach(button => button.setAttribute("aria-selected", String(button.dataset.tab === id)));
-    scroll.replaceChildren(h("div", { class: "r-page" }, pages[id]()));
-    scroll.scrollTop = 0;
-    requestAnimationFrame(moveLine);
+  function render(direction = "") {
+    const page = stack.at(-1);
+    const spec = SETTINGS_PAGES.find(entry => entry.id === page);
+    titleText.textContent = spec ? spec.title : "Settings";
+    backButton.lastChild.textContent = stack.length > 1 ? "Settings" : "Back";
+    scroll.replaceChildren(h("div", { class: "r-page", "data-dir": direction }, page === "root" ? rootPage() : pages[page]()));
+    if (direction) scroll.scrollTop = 0;
+  }
+
+  function go(id) {
+    stack = [...stack, id];
+    Sounds.play("tick");
+    render("in");
+  }
+
+  function back() {
+    if (stack.length > 1) {
+      stack = stack.slice(0, -1);
+      render("out");
+    } else {
+      app.showView("main");
+    }
+  }
+
+  function summary(id, settings) {
+    const provider = Settings.provider(settings);
+    switch (id) {
+      case "model": return provider.apiKey ? AI.label(settings).replace(/^Claude /, "") : "No key";
+      case "answering": return !settings.autoFill ? "Chat only" : settings.autoSubmit ? "Enter and submit" : "Enter answers";
+      case "accuracy": return Object.fromEntries(ACCURACY_MODES)[settings.accuracyMode];
+      case "look": return capitalize(settings.theme === "system" ? "auto" : settings.theme);
+      case "panel": return capitalize(settings.look.size);
+      case "pill": return settings.island.enabled ? { siri: "Glow", glass: "Glass", dark: "Dark", accent: "Accent" }[settings.island.style] : "Off";
+      case "hiding": return settings.stealth ? "Stealth" : "";
+      case "site": return Question.site().label;
+      default: return "";
+    }
+  }
+
+  function navRow(spec, settings) {
+    return h("button", { class: "r-row r-nav", type: "button", onclick: () => go(spec.id) },
+      h("span", { class: "r-nav-icon", style: `--tint:${spec.tint}` }, icon(spec.icon)),
+      h("span", { class: "r-row-label", text: spec.title }),
+      h("span", { class: "r-nav-detail", text: summary(spec.id, settings) }),
+      icon("chevron"));
+  }
+
+  function rootPage() {
+    const settings = Settings.load();
+    const search = UI.field({
+      type: "search",
+      placeholder: "Search settings",
+      "aria-label": "Search settings",
+      value: query,
+      oninput: e => {
+        query = e.target.value.trim().toLowerCase();
+        results.replaceChildren(...listing(Settings.load()));
+      }
+    });
+    const results = h("div", {}, listing(settings));
+    requestAnimationFrame(() => query && search.focus({ preventScroll: true }));
+    return [h("div", { class: "r-search r-search-settings" }, icon("search"), search), results];
+  }
+
+  function listing(settings) {
+    if (query) {
+      const found = SETTINGS_PAGES.filter(spec => `${spec.title} ${spec.words}`.toLowerCase().includes(query));
+      return found.length
+        ? [h("section", { class: "r-section" }, h("div", { class: "r-group" }, found.map(spec => navRow(spec, settings))))]
+        : [h("p", { class: "r-none", text: `Nothing matches "${query}".` })];
+    }
+    return [0, 1, 2, 3].map(group => h("section", { class: "r-section" },
+      h("div", { class: "r-group" }, SETTINGS_PAGES.filter(spec => spec.group === group).map(spec => navRow(spec, settings)))));
   }
 
   const delayRows = (prefix, settings) => {
@@ -5037,7 +5491,7 @@ function createSettings(app) {
     return [
       UI.line(prefix ? "Submit timing" : "Timing", UI.segmented("Timing", [["fixed", "Fixed"], ["random", "Random"]], settings[keys.mode], mode => {
         save({ [keys.mode]: mode });
-        select("answering");
+        render();
       })),
       random
         ? [UI.row("Shortest", UI.ms("Shortest delay", settings[keys.min], checked(keys.min, keys.max, true))),
@@ -5046,38 +5500,16 @@ function createSettings(app) {
     ];
   };
 
-  const accuracySection = settings => {
-    const mode = settings.accuracyMode;
-    const record = Accuracy.load();
-    const score = Accuracy.score(record);
-    const notes = {
-      off: "Every answer Rain enters aims to be correct.",
-      chance: "Each answer has this chance of being a believable mistake. Never two misses in a row.",
-      target: "Rain keeps your running score close to this, missing on purpose only when you're above it."
-    };
-    const percent = (label, key) => h("span", { class: "r-unit" }, h("input", {
-      class: "r-field r-number",
-      type: "number",
-      min: 0,
-      max: 100,
-      step: 1,
-      value: settings[key],
-      "aria-label": label,
-      onchange: e => e.target.validity.valid && e.target.value !== "" && save({ [key]: e.target.valueAsNumber })
-    }), "%");
-    return UI.section("Accuracy", notes[mode],
-      h("div", { class: "r-row" }, UI.segmented("Accuracy", ACCURACY_MODES, mode, value => {
-        save({ accuracyMode: value });
-        select("answering");
-      }, true)),
-      mode === "chance" && UI.row("Chance of a wrong answer", percent("Chance of a wrong answer", "missChance")),
-      mode === "target" && UI.row("Target score", percent("Target score", "targetScore")),
-      mode !== "off" && UI.line(score === null ? "No answers counted yet" : `${record.total - record.wrong} of ${record.total} right, ${score}%`,
-        UI.button(null, "Reset", () => {
-          Accuracy.reset();
-          select("answering");
-        })));
-  };
+  const percent = (settings, label, key) => h("span", { class: "r-unit" }, h("input", {
+    class: "r-field r-number",
+    type: "number",
+    min: 0,
+    max: 100,
+    step: 1,
+    value: settings[key],
+    "aria-label": label,
+    onchange: e => e.target.validity.valid && e.target.value !== "" && save({ [key]: e.target.valueAsNumber })
+  }), "%");
 
   const pages = {
     model() {
@@ -5086,13 +5518,13 @@ function createSettings(app) {
       const own = settings.providers[provider.id];
       const listId = "r-model-list";
       const list = h("datalist", { id: listId }, provider.spec.models.map(model => h("option", { value: model.id, label: model.label })));
-      const modelInput = UI.field({ class: "r-field r-field-mono", value: own.model, placeholder: provider.spec.model, list: listId, oninput: e => saveProvider({ model: e.target.value }) });
+      const modelInput = UI.field({ class: "r-field r-field-mono", value: own.model, placeholder: provider.spec.model, list: listId, onchange: e => app.switchModel(provider.id, e.target.value.trim() || provider.spec.model, true) });
       const picker = h("select", {
         class: "r-field",
         "aria-label": "Available models",
         onchange: e => {
           modelInput.value = e.target.value;
-          saveProvider({ model: e.target.value });
+          app.switchModel(provider.id, e.target.value, true);
         }
       });
       const keyInput = UI.field({ class: "r-field r-field-mono", type: "password", value: own.apiKey, placeholder: provider.spec.keyHint, "aria-label": "API key", oninput: e => saveProvider({ apiKey: e.target.value }) });
@@ -5102,7 +5534,6 @@ function createSettings(app) {
         keyInput.type = visible ? "text" : "password";
         reveal.replaceChildren(icon(visible ? "eyeOff" : "eye"));
       });
-
       const load = UI.button("refresh", "Load", async () => {
         load.disabled = true;
         try {
@@ -5118,20 +5549,24 @@ function createSettings(app) {
           load.disabled = false;
         }
       });
-
       return [
-        UI.section("Provider", provider.id === "openai" ? "Works with OpenAI and any API that speaks the OpenAI chat format, such as OpenRouter, Groq, LM Studio or Ollama. Change the base URL to point at it." : null,
+        UI.section("Provider", provider.id === "openai" ? "Works with OpenAI and anything that speaks the OpenAI chat format, such as OpenRouter, Groq, LM Studio or Ollama. Point the base URL at it." : null,
           h("div", { class: "r-row" }, UI.segmented("Provider", CONFIG.providers.map(spec => [spec.id, spec.id === "openai" ? "OpenAI" : spec.label]), provider.id, id => {
             save({ provider: id });
-            select("model");
+            render();
           }, true))),
-        UI.section(provider.spec.label, "Keys stay in this browser and are only sent to the provider's address below.",
+        UI.section(provider.spec.label, "Keys stay in this browser and only go to the address below.",
           UI.stack("API key", h("div", { class: "r-inline" }, keyInput, reveal)),
           UI.stack("Model", h("div", { class: "r-inline" }, modelInput, load)),
           pickerRow,
           UI.stack("Base URL", UI.field({ class: "r-field r-field-mono", value: own.baseUrl, placeholder: provider.spec.baseUrl, oninput: e => saveProvider({ baseUrl: e.target.value }) }), "Leave empty for the default"),
           provider.spec.efforts && UI.line("Effort", UI.segmented("Effort", CONFIG.efforts.map(effort => [effort, capitalize(effort)]), settings.effort, effort => save({ effort }))),
           h("button", { class: "r-row r-row-action", type: "button", text: "Test connection", onclick: () => app.testConnection() })),
+        settings.recentModels.length ? UI.section("Recent models", "These show up in the model switcher at the top of the panel.",
+          h("button", { class: "r-row r-row-action", type: "button", text: "Clear recent models", onclick: () => {
+            save({ recentModels: [] });
+            render();
+          } })) : null,
         list
       ];
     },
@@ -5140,31 +5575,163 @@ function createSettings(app) {
       const settings = Settings.load();
       const on = settings.autoFill;
       return [
-        UI.section("Entering answers", "Answer and Auto Answer type, click and drag the answer into the page after the wait.",
+        UI.section(null, "Answer and Auto Answer type, click and drag the answer into the page after the wait.",
           UI.row("Enter answers on the page", UI.switch("Enter answers", on, value => {
             save({ autoFill: value });
-            select("answering");
+            render();
           })),
           on && delayRows(false, settings)),
-        on && UI.section("Submitting", "Presses Submit, or Next on sites like iCEV, after the answer is in. On DeltaMath and IXL it also moves on to the next problem.",
+        on && UI.section("Submitting", "Presses Submit, or Next on sites like iCEV, once the answer is in. On DeltaMath and IXL it also moves on to the next problem.",
           UI.row("Submit automatically", UI.switch("Submit automatically", settings.autoSubmit, value => {
             save({ autoSubmit: value });
-            select("answering");
+            render();
           })),
           settings.autoSubmit && delayRows(true, settings)),
-        on && accuracySection(settings),
         on && UI.section("Replies", settings.replyStyle === "quiet"
-          ? "Answer and Auto Answer skip the explanation and only enter the answer. Faster and cheaper. Rain still explains if something goes wrong."
+          ? "Skips the explanation and only enters the answer. Faster and cheaper. Rain still explains when something goes wrong."
           : "Rain explains each answer before entering it.",
           h("div", { class: "r-row" }, UI.segmented("Replies", [["explain", "Explain"], ["quiet", "Answer only"]], settings.replyStyle, replyStyle => {
             save({ replyStyle });
-            select("answering");
+            render();
           }, true))),
         UI.section("Chat memory", settings.memory === "chat" ? "Rain sees the last few questions in this chat. Uses more tokens." : "Rain only sees the current question and your messages about it.",
           h("div", { class: "r-row" }, UI.segmented("Memory", [["question", "Current question"], ["chat", "Whole chat"]], settings.memory, memory => {
             save({ memory });
-            select("answering");
+            render();
           }, true)))
+      ];
+    },
+
+    accuracy() {
+      const settings = Settings.load();
+      const mode = settings.accuracyMode;
+      const record = Accuracy.load();
+      const score = Accuracy.score(record);
+      const notes = {
+        off: "Every answer Rain enters aims to be correct.",
+        chance: "Each answer has this chance of being a believable mistake. Never two misses in a row.",
+        target: "Rain keeps your running score close to this, missing on purpose only when you're above it."
+      };
+      return [
+        UI.section(null, notes[mode],
+          h("div", { class: "r-row" }, UI.segmented("Accuracy", ACCURACY_MODES, mode, value => {
+            save({ accuracyMode: value });
+            render();
+          }, true)),
+          mode === "chance" && UI.row("Chance of a wrong answer", percent(settings, "Chance of a wrong answer", "missChance")),
+          mode === "target" && UI.row("Target score", percent(settings, "Target score", "targetScore"))),
+        mode !== "off" && UI.section("So far", null,
+          UI.line(score === null ? "No answers counted yet" : `${record.total - record.wrong} of ${record.total} right, ${score}%`,
+            UI.button(null, "Reset", () => {
+              Accuracy.reset();
+              render();
+            })))
+      ];
+    },
+
+    look() {
+      const settings = Settings.load();
+      const swatches = CONFIG.ui.accents.map(accent => h("button", {
+        class: "r-swatch",
+        type: "button",
+        role: "radio",
+        title: capitalize(accent.id),
+        "aria-label": capitalize(accent.id),
+        "aria-checked": String(settings.accent === accent.id),
+        style: `--c:${app.scheme() === "dark" ? accent.dark : accent.light}`,
+        onclick: e => {
+          swatches.forEach(swatch => swatch.setAttribute("aria-checked", String(swatch === e.currentTarget)));
+          Sounds.play("tick");
+          save({ accent: accent.id });
+        }
+      }));
+      const glass = h("input", {
+        class: "r-range",
+        type: "range",
+        min: 55,
+        max: 100,
+        step: 1,
+        value: settings.look.glass,
+        "aria-label": "Panel opacity",
+        oninput: e => saveLook({ glass: Number(e.target.value) })
+      });
+      const volume = h("input", {
+        class: "r-range",
+        type: "range",
+        min: 0,
+        max: 1,
+        step: .05,
+        value: settings.volume,
+        "aria-label": "Volume",
+        onchange: e => {
+          save({ volume: Number(e.target.value) });
+          Sounds.play("reply", true);
+        }
+      });
+      return [
+        UI.section("Theme", null,
+          h("div", { class: "r-row" }, UI.segmented("Theme", [["light", "Light"], ["dark", "Dark"], ["system", "Match system"]], settings.theme, theme => save({ theme }), true)),
+          UI.stack("Accent", h("div", { class: "r-swatches", role: "radiogroup", "aria-label": "Accent" }, swatches))),
+        UI.section("Glass", "Lower opacity lets more of the page show through.",
+          UI.row("Solid panel", UI.switch("Solid panel", settings.reduceTransparency, value => {
+            save({ reduceTransparency: value });
+            render();
+          })),
+          !settings.reduceTransparency && UI.line("Opacity", h("div", { class: "r-inline r-slider" }, glass))),
+        UI.section("Text", null,
+          UI.line("Size", UI.segmented("Text size", [["13", "S"], ["14", "M"], ["15", "L"], ["16", "XL"]], String(settings.look.text), text => saveLook({ text: Number(text) }))),
+          UI.line("Spacing", UI.segmented("Density", [["comfortable", "Roomy"], ["compact", "Tight"]], settings.density, density => save({ density })))),
+        UI.section("Sound", "Short synthesized sounds for replies, actions and errors.",
+          UI.row("Play sounds", UI.switch("Sounds", settings.sounds, value => save({ sounds: value }))),
+          UI.line("Volume", h("div", { class: "r-inline r-slider" }, volume, UI.iconButton("play", "Play a sample", () => Sounds.play("success", true)))))
+      ];
+    },
+
+    panel() {
+      const settings = Settings.load();
+      const look = settings.look;
+      const toggle = (label, key) => UI.row(label, UI.switch(label, look.toolbar[key], value => saveLook({ toolbar: { [key]: value } })));
+      return [
+        UI.section("Size", null,
+          h("div", { class: "r-row" }, UI.segmented("Panel size", [["compact", "Compact"], ["regular", "Regular"], ["large", "Large"]], look.size, size => saveLook({ size }), true)),
+          h("button", { class: "r-row r-row-action", type: "button", text: "Move back to the corner", onclick: () => app.resetPosition() })),
+        UI.section("Messages", null,
+          UI.line("Style", UI.segmented("Message style", [["true", "Bubbles"], ["false", "Plain"]], String(look.bubbles), value => {
+            saveLook({ bubbles: value === "true" });
+            app.rerender();
+          })),
+          UI.row("Show times", UI.switch("Show times", look.times, value => {
+            saveLook({ times: value });
+            app.rerender();
+          }))),
+        UI.section("Top of the panel", "Turn off what you don't use to keep the panel quiet.",
+          toggle("Model switcher", "model"),
+          toggle("Auto button", "auto"),
+          toggle("Area button", "area"),
+          toggle("New chat button", "newChat"),
+          UI.row("Explain, Hint, Check, Answer", UI.switch("Action buttons", look.actions, value => saveLook({ actions: value })))),
+        UI.section("Opening", null,
+          UI.row("Open Rain when a page loads", UI.switch("Open on load", settings.openOnStart, value => save({ openOnStart: value }))))
+      ];
+    },
+
+    pill() {
+      const settings = Settings.load();
+      const island = settings.island;
+      const setIsland = (patch, rerender = false) => {
+        save({ island: { ...Settings.load().island, ...patch } });
+        app.previewIsland();
+        if (rerender) render();
+      };
+      return [
+        UI.section(null, "The pill at the edge of the page that shows what Rain is doing.",
+          UI.row("Show status pill", UI.switch("Status pill", island.enabled, value => setIsland({ enabled: value }, true)), "Errors and Cancel buttons still show when this is off")),
+        island.enabled && UI.section("Look", null,
+          UI.line("Style", UI.segmented("Pill style", [["siri", "Glow"], ["glass", "Glass"], ["dark", "Dark"], ["accent", "Accent"]], island.style, style => setIsland({ style }))),
+          UI.line("Position", UI.segmented("Pill position", [["top", "Top"], ["bottom", "Bottom"]], island.position, position => setIsland({ position })))),
+        island.enabled && UI.section("Behavior", null,
+          UI.line("Shows", UI.segmented("Pill detail", [["all", "Everything"], ["important", "Results"]], island.detail, detail => setIsland({ detail }))),
+          UI.line("Stays for", UI.segmented("Pill duration", [["short", "Short"], ["normal", "Normal"], ["long", "Long"]], island.duration, duration => setIsland({ duration }))))
       ];
     },
 
@@ -5181,66 +5748,37 @@ function createSettings(app) {
         });
         return UI.line(action.label, button, action.note);
       });
-      return [
-        UI.section("Shortcuts", "Click a shortcut, then press the new keys. Backspace clears it, Esc cancels. Single keys are ignored while you type in a box.", rows),
-        UI.section("Visibility", null,
-          UI.row("Open Rain when a page loads", UI.switch("Open on load", settings.openOnStart, value => save({ openOnStart: value }))),
-          UI.row("Show a launcher while hidden", UI.switch("Launcher", settings.launcher, value => save({ launcher: value })), "Off means Rain is fully hidden until you press the shortcut"))
-      ];
+      return [UI.section(null, "Click a shortcut, then press the new keys. Backspace clears it, Esc cancels. Single keys are ignored while you type in a box.", rows)];
     },
 
-    look() {
+    hiding() {
       const settings = Settings.load();
-      const island = settings.island;
-      const setIsland = (patch, rerender = false) => {
-        save({ island: { ...Settings.load().island, ...patch } });
-        app.previewIsland();
-        if (rerender) select("look");
+      const actions = [["hide", "Hide"], ["unload", "Unload"], ["leave", "Leave page"]];
+      const notes = {
+        hide: "Hides the panel and the status pill and stops Auto Answer. Press the show shortcut to bring Rain back.",
+        unload: "Removes Rain from this tab completely, including site tweaks. It comes back when the page reloads.",
+        leave: "Removes Rain and opens the page below in this tab."
       };
-      const swatches = CONFIG.ui.accents.map(accent => h("button", {
-        class: "r-swatch",
-        type: "button",
-        role: "radio",
-        title: capitalize(accent.id),
-        "aria-label": capitalize(accent.id),
-        "aria-checked": String(settings.accent === accent.id),
-        style: `--c:${app.scheme() === "dark" ? accent.dark : accent.light}`,
-        onclick: e => {
-          swatches.forEach(swatch => swatch.setAttribute("aria-checked", String(swatch === e.currentTarget)));
-          Sounds.play("tick");
-          save({ accent: accent.id });
-        }
-      }));
-      const volume = h("input", {
-        class: "r-range",
-        type: "range",
-        min: 0,
-        max: 1,
-        step: .05,
-        value: settings.volume,
-        "aria-label": "Volume",
-        onchange: e => {
-          save({ volume: Number(e.target.value) });
-          Sounds.play("reply", true);
-        }
-      });
       return [
-        UI.section("Appearance", null,
-          UI.line("Theme", UI.segmented("Theme", [["light", "Light"], ["dark", "Dark"], ["system", "Auto"]], settings.theme, theme => save({ theme }))),
-          UI.stack("Accent", h("div", { class: "r-swatches", role: "radiogroup", "aria-label": "Accent" }, swatches)),
-          UI.line("Density", UI.segmented("Density", [["comfortable", "Roomy"], ["compact", "Compact"]], settings.density, density => save({ density }))),
-          UI.row("Reduce transparency", UI.switch("Reduce transparency", settings.reduceTransparency, value => save({ reduceTransparency: value })), "Solid panel instead of glass")),
-        UI.section("Status pill", "The pill at the edge of the page that shows what Rain is doing.",
-          UI.row("Show status pill", UI.switch("Status pill", island.enabled, value => setIsland({ enabled: value }, true)), "Errors and buttons like Cancel still show when this is off"),
-          island.enabled && [
-            UI.line("Style", UI.segmented("Pill style", [["glass", "Glass"], ["dark", "Dark"], ["accent", "Accent"]], island.style, style => setIsland({ style }))),
-            UI.line("Position", UI.segmented("Pill position", [["top", "Top"], ["bottom", "Bottom"]], island.position, position => setIsland({ position }))),
-            UI.line("Shows", UI.segmented("Pill detail", [["all", "Everything"], ["important", "Results only"]], island.detail, detail => setIsland({ detail }))),
-            UI.line("Stays for", UI.segmented("Pill duration", [["short", "Short"], ["normal", "Normal"], ["long", "Long"]], island.duration, duration => setIsland({ duration })))
-          ]),
-        UI.section("Sound", "Short synthesized sounds for replies, actions and errors.",
-          UI.row("Play sounds", UI.switch("Sounds", settings.sounds, value => save({ sounds: value }))),
-          UI.line("Volume", h("div", { class: "r-inline", style: "flex:1;max-width:190px" }, volume, UI.iconButton("play", "Play a sample", () => Sounds.play("success", true)))))
+        UI.section("Stealth", "No status pill, no launcher, no sounds, and Rain starts hidden. Open it with the show shortcut.",
+          UI.row("Stealth mode", UI.switch("Stealth mode", settings.stealth, value => {
+            save({ stealth: value });
+            app.applyStealth();
+          }))),
+        UI.section("Panic", notes[settings.panicAction],
+          h("div", { class: "r-row" }, UI.segmented("Panic action", actions, settings.panicAction, panicAction => {
+            save({ panicAction });
+            render();
+          }, true)),
+          settings.panicAction === "leave" && UI.stack("Page to open", UI.field({ class: "r-field r-field-mono", type: "url", value: settings.panicUrl, placeholder: "https://", onchange: e => save({ panicUrl: e.target.value.trim() }) })),
+          UI.line("Panic shortcut", h("span", { class: "r-keycaps" }, Keys.parts(settings.keys.panic).map(part => h("kbd", { text: part })), !settings.keys.panic && "Not set"))),
+        UI.section("While hidden", null,
+          UI.row("Show a launcher button", UI.switch("Launcher", settings.launcher, value => save({ launcher: value })), "A small button in the corner that opens Rain")),
+        UI.section("Chats", null,
+          UI.row("Private mode", UI.switch("Private mode", settings.privateMode, value => {
+            save({ privateMode: value });
+            app.newChat(value);
+          }), "New chats are not saved"))
       ];
     },
 
@@ -5249,7 +5787,7 @@ function createSettings(app) {
       const settings = Settings.load();
       const current = site.id === "generic" ? null : site.id;
       return [
-        UI.section(`Tweaks for ${site.label}`, "Tweaks are saved per site and apply as soon as the page loads.",
+        UI.section(`Tweaks for ${site.label}`, "Saved per site and applied as soon as the page loads.",
           Tweaks.list.map(tweak => UI.row(tweak.label, UI.switch(tweak.label, Tweaks.enabled(tweak.id, settings), value => Tweaks.set(tweak.id, value)), tweak.note))),
         h("section", { class: "r-section" },
           h("h3", { text: "Supported sites" }),
@@ -5257,41 +5795,49 @@ function createSettings(app) {
             entry.id === current ? icon("check") : null,
             h("span", { text: entry.label }),
             h("em", { text: entry.hosts[0] }))))),
-          h("p", { text: "Other sites work too through the userscript's match list or the console version, with a generic reader." }))
+          h("p", { text: "Other sites work too with a generic reader. Press Area and click the question if Rain reads the wrong part." }))
       ];
     },
 
     data() {
-      const settings = Settings.load();
       const stats = Stats.load();
       const cell = (value, label) => h("div", { class: "r-stat" }, h("b", { text: compact.format(value), title: value.toLocaleString() }), h("span", { text: label }));
+      const confirm = (text, again, run) => h("button", { class: "r-row r-row-action r-row-danger", type: "button", text, onclick: e => {
+        if (e.currentTarget.dataset.confirm !== "true") {
+          e.currentTarget.dataset.confirm = "true";
+          e.currentTarget.textContent = again;
+          return;
+        }
+        run();
+      } });
       return [
-        UI.section("Privacy", settings.privateMode ? "New chats are kept in memory only and disappear when you leave the page." : "Chats are saved in this browser. The last " + CONFIG.ui.maxChats + " are kept.",
-          UI.row("Private mode", UI.switch("Private mode", settings.privateMode, value => {
-            save({ privateMode: value });
-            app.newChat(value);
-            select("data");
-          }), "Don't save new chats")),
         UI.section("Usage", null,
           h("div", { class: "r-stats" },
             cell(stats.answered, "Answered"), cell(stats.submitted, "Submitted"), cell(stats.advanced, "Next pressed"),
             cell(stats.calls, "Requests"), cell(stats.input, "Tokens in"), cell(stats.output, "Tokens out")),
           h("button", { class: "r-row r-row-action", type: "button", text: "Reset usage", onclick: () => {
             Stats.reset();
-            select("data");
+            render();
           } })),
-        UI.section("Chats", null,
+        UI.section("Chats", `The last ${CONFIG.ui.maxChats} chats are kept in this browser.`,
           h("button", { class: "r-row r-row-action", type: "button", text: "Copy all chats as JSON", onclick: () => app.exportChats() }),
-          h("button", { class: "r-row r-row-action r-row-danger", type: "button", text: "Delete all chats", onclick: e => {
-            if (e.currentTarget.dataset.confirm !== "true") {
-              e.currentTarget.dataset.confirm = "true";
-              e.currentTarget.textContent = "Press again to delete every chat";
-              return;
-            }
+          confirm("Delete all chats", "Press again to delete every chat", () => {
             app.clearChats();
-            select("data");
-          } })),
-        h("p", { class: "r-version", text: `${CONFIG.name} ${CONFIG.version}` })
+            render();
+          })),
+        UI.section("Reset", "Your API keys are kept.",
+          confirm("Reset all settings", "Press again to reset everything", () => app.resetSettings()))
+      ];
+    },
+
+    about() {
+      return [
+        h("div", { class: "r-about" },
+          h("b", { text: CONFIG.name }),
+          h("span", { text: `Version ${CONFIG.version}` })),
+        UI.section(null, null,
+          h("button", { class: "r-row r-row-action", type: "button", text: "Run setup again", onclick: () => app.showView("setup") }),
+          CONFIG.repo && h("a", { class: "r-row r-row-action", href: `https://github.com/${CONFIG.repo}`, target: "_blank", rel: "noopener", text: "Open on GitHub" }))
       ];
     }
   };
@@ -5326,26 +5872,28 @@ function createSettings(app) {
     window.removeEventListener("keydown", recording.onKey, true);
     recording = null;
     setTimeout(() => { app.recording = false; }, 0);
-    if (refresh) select("keys");
+    if (refresh) render();
   }
 
   return {
     el,
-    open(tab = current) {
-      select(tab);
+    open(page) {
+      query = "";
+      stack = page && pages[page] ? ["root", page] : ["root"];
+      render("in");
     },
     close() {
       stopRecording();
     },
     refresh() {
-      if (el.dataset.active === "true") select(current);
+      if (el.dataset.active === "true") render();
     }
   };
 }
 
 function createChatList(app) {
   let query = "";
-  const list = h("ul", { class: "r-chat-list" });
+  const list = h("div", { class: "r-chat-list" });
   const search = UI.field({
     type: "search",
     placeholder: "Search chats",
@@ -5356,42 +5904,91 @@ function createChatList(app) {
     }
   });
   const el = h("section", { class: "r-view r-view-chats", "data-active": "false", "aria-label": "Chats" },
-    UI.subhead("Chats", () => app.showView("main"), UI.iconButton("plus", "New chat", () => app.newChat(false, true))),
+    UI.subhead("Chats", () => app.showView("main")),
     h("div", { class: "r-search" }, icon("search"), search),
-    h("div", { class: "r-scroll", style: "padding:0" }, list),
+    h("div", { class: "r-scroll r-chat-scroll" }, list),
     h("footer", { class: "r-chats-foot" },
       UI.button("plus", "New chat", () => app.newChat(false, true)),
       UI.button("lock", "Private chat", () => app.newChat(true, true))));
 
+  function day(at) {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    if (at >= start.getTime()) return "Today";
+    if (at >= start.getTime() - 86400000) return "Yesterday";
+    if (at >= start.getTime() - 6 * 86400000) return "This week";
+    return "Earlier";
+  }
+
+  function rename(entry, title) {
+    const input = UI.field({ class: "r-field r-rename", value: entry.title, "aria-label": "Chat name" });
+    const finish = commit => {
+      if (commit && input.value.trim()) app.renameChat(entry.id, input.value.trim().slice(0, 80));
+      render();
+    };
+    input.addEventListener("keydown", e => {
+      e.stopPropagation();
+      if (e.key === "Enter") finish(true);
+      if (e.key === "Escape") finish(false);
+    });
+    input.addEventListener("blur", () => finish(true));
+    input.addEventListener("click", e => e.stopPropagation());
+    title.replaceWith(input);
+    input.focus();
+    input.select();
+  }
+
   function item(entry, current, index) {
     const meta = entry.private ? "Private, not saved" : `${entry.site}, ${ago(entry.updated)}`;
-    return h("li", {
+    const title = h("span", { class: "r-chat-title", text: entry.title });
+    return h("div", {
       class: "r-chat",
+      role: "button",
       "data-current": String(current),
       tabindex: 0,
-      style: `animation-delay:${Math.min(index, 10) * 18}ms`,
+      style: `animation-delay:${Math.min(index, 12) * 16}ms`,
       onclick: () => app.openChat(entry.id),
       onkeydown: e => {
         if (e.key === "Enter") app.openChat(entry.id);
       }
     },
-      h("span", { class: "r-chat-text" }, h("span", { class: "r-chat-title", text: entry.title }), h("span", { class: "r-chat-meta", text: meta })),
-      !entry.private && UI.iconButton("trash", "Delete chat", e => {
-        e.stopPropagation();
-        app.deleteChat(entry.id);
-      }));
+      h("span", { class: "r-chat-text" }, title, h("span", { class: "r-chat-meta", text: meta })),
+      !entry.private && h("span", { class: "r-chat-tools" },
+        UI.iconButton("pin", entry.pinned ? "Unpin" : "Pin", e => {
+          e.stopPropagation();
+          app.pinChat(entry.id, !entry.pinned);
+        }, { "aria-pressed": String(Boolean(entry.pinned)) }),
+        UI.iconButton("pencil", "Rename", e => {
+          e.stopPropagation();
+          rename(entry, title);
+        }),
+        UI.iconButton("trash", "Delete chat", e => {
+          e.stopPropagation();
+          app.deleteChat(entry.id);
+        })));
   }
 
   function render() {
     const active = app.chat();
     const entries = Chats.index();
     if (active.log.length && !entries.some(entry => entry.id === active.id)) {
-      entries.unshift({ id: active.id, title: active.title, site: active.site, updated: active.updated, count: active.log.filter(e => e.role === "you").length, private: active.private });
+      entries.unshift({ id: active.id, title: active.title, site: active.site, updated: active.updated, pinned: active.pinned, private: active.private });
     }
     const shown = entries.filter(entry => !query || entry.title.toLowerCase().includes(query) || entry.site.toLowerCase().includes(query));
-    list.replaceChildren(...(shown.length
-      ? shown.map((entry, i) => item(entry, entry.id === active.id, i))
-      : [h("li", { class: "r-chat-empty", text: query ? "No chats match that search." : "No saved chats yet. Ask Rain something and it shows up here." })]));
+    if (!shown.length) {
+      list.replaceChildren(h("p", { class: "r-chat-empty", text: query ? "No chats match that search." : "No saved chats yet. Ask Rain something and it shows up here." }));
+      return;
+    }
+    const groups = new Map();
+    for (const entry of shown) {
+      const name = entry.pinned ? "Pinned" : day(entry.updated);
+      groups.set(name, [...(groups.get(name) || []), entry]);
+    }
+    let index = 0;
+    list.replaceChildren(...["Pinned", "Today", "Yesterday", "This week", "Earlier"].filter(name => groups.has(name)).map(name =>
+      h("section", { class: "r-chat-group" },
+        h("h3", { text: name }),
+        groups.get(name).map(entry => item(entry, entry.id === active.id, index++)))));
   }
 
   return {
@@ -5411,17 +6008,26 @@ const KEY_PAGES = {
   gemini: "aistudio.google.com"
 };
 
+const SETUP_PRESETS = [
+  { id: "tutor", title: "Tutor", note: "Explains and hints in the chat. Never touches the page.", patch: { autoFill: false, autoSubmit: false, replyStyle: "explain" } },
+  { id: "helper", title: "Helper", note: "Explains, then enters the answer for you to check and submit.", patch: { autoFill: true, autoSubmit: false, replyStyle: "explain" } },
+  { id: "autopilot", title: "Autopilot", note: "Enters the answer, submits and moves on. No explanations.", patch: { autoFill: true, autoSubmit: true, replyStyle: "quiet" } }
+];
+
 function createSetup(app) {
-  const steps = ["welcome", "provider", "answering", "keys"];
+  const steps = ["welcome", "connect", "style", "look", "keys"];
   let step = 0;
+  let tested = null;
 
   const body = h("div", { class: "r-setup-body" });
-  const dots = h("div", { class: "r-setup-dots", "aria-hidden": "true" }, steps.map(() => h("i")));
+  const progress = h("div", { class: "r-setup-progress", "aria-hidden": "true" }, h("i"));
   const back = h("button", { class: "r-small-btn", type: "button", text: "Back", onclick: () => go(step - 1) });
   const next = h("button", { class: "r-setup-next", type: "button", onclick: () => advance() });
+  const counter = h("span", { class: "r-setup-count" });
   const el = h("section", { class: "r-view r-view-setup", "data-active": "false", "aria-label": "Setup" },
+    progress,
     h("div", { class: "r-scroll r-setup-scroll" }, body),
-    h("footer", { class: "r-setup-foot" }, back, dots, next));
+    h("footer", { class: "r-setup-foot" }, back, counter, next));
 
   function save(patch) {
     const settings = Settings.save(patch);
@@ -5434,23 +6040,37 @@ function createSetup(app) {
     return save({ providers: { ...settings.providers, [settings.provider]: { ...settings.providers[settings.provider], ...patch } } });
   }
 
+  function choice(name, options, current, onpick) {
+    return h("div", { class: "r-choices", role: "radiogroup", "aria-label": name }, options.map(option => h("button", {
+      class: "r-choice",
+      type: "button",
+      role: "radio",
+      "aria-checked": String(option.id === current),
+      onclick: () => {
+        Sounds.play("tick");
+        onpick(option.id);
+      }
+    }, h("span", { class: "r-choice-dot" }), h("span", { class: "r-choice-text" }, h("b", { text: option.title }), h("small", { text: option.note })))));
+  }
+
   const pages = {
     welcome() {
-      const fact = (label, value) => h("div", { class: "r-row r-setup-fact" }, h("span", { text: label }), h("b", { text: value }));
+      const fact = (label, value) => h("div", { class: "r-row r-setup-fact" }, h("span", { text: label }), h("b", {}, value));
       return [
         h("h2", { text: "Let's set up Rain" }),
-        h("p", { text: "It reads the question you're on and helps with it, or answers it for you. Takes about a minute." }),
+        h("p", { text: "It reads the question you're on and helps with it, or answers it for you. Five quick steps." }),
         UI.section(null, "Everything here can be changed later in Settings.",
           fact("Works on", CONFIG.sites.map(site => site.label).join(", ")),
           fact("You need", "An API key from Claude, OpenAI or Gemini"),
-          h("div", { class: "r-row r-setup-fact" }, h("span", { text: "Show or hide" }), h("b", {}, Keys.parts(Settings.load().keys.toggle).map(part => h("kbd", { text: part })))))
+          fact("Your key", "Stays in this browser"))
       ];
     },
 
-    provider() {
+    connect() {
       const settings = Settings.load();
       const provider = Settings.provider(settings);
       const own = settings.providers[provider.id];
+      const result = h("p", { class: "r-setup-result", "data-tone": tested?.ok ? "ok" : tested ? "error" : "", text: tested?.text || "" });
       const key = UI.field({
         class: "r-field r-field-mono",
         type: "password",
@@ -5459,38 +6079,78 @@ function createSetup(app) {
         "aria-label": "API key",
         oninput: e => {
           saveProvider({ apiKey: e.target.value });
+          tested = null;
+          result.textContent = "";
           refreshNext();
         }
       });
       const models = provider.spec.models;
+      const test = h("button", { class: "r-row r-row-action", type: "button", text: "Test connection", onclick: async () => {
+        test.disabled = true;
+        result.dataset.tone = "";
+        result.textContent = "Testing…";
+        tested = await app.checkConnection();
+        result.dataset.tone = tested.ok ? "ok" : "error";
+        result.textContent = tested.text;
+        test.disabled = false;
+      } });
       return [
         h("h2", { text: "Connect a model" }),
-        h("p", { text: `Paste an API key. Get one at ${KEY_PAGES[provider.id] || "your provider"}. It stays in this browser.` }),
+        h("p", { text: `Paste a key from ${KEY_PAGES[provider.id] || "your provider"}.` }),
         UI.section(null, null,
           h("div", { class: "r-row" }, UI.segmented("Provider", CONFIG.providers.map(spec => [spec.id, spec.id === "openai" ? "OpenAI" : spec.label]), provider.id, id => {
             save({ provider: id });
+            tested = null;
             go(step);
           }, true)),
           UI.stack("API key", key),
           models.length
-            ? UI.stack("Model", UI.segmented("Model", models.map(model => [model.id, model.label.replace(/^Claude /, "")]), provider.model, model => saveProvider({ model }), true), "Haiku is fast and cheap. Sonnet and Opus think harder on tough questions.")
+            ? UI.stack("Model", UI.segmented("Model", models.map(model => [model.id, model.label.replace(/^Claude /, "")]), provider.model, model => saveProvider({ model }), true), "Haiku is quick and cheap. Sonnet and Opus think harder on tough questions.")
             : UI.stack("Model", UI.field({ class: "r-field r-field-mono", value: own.model, placeholder: provider.spec.model, oninput: e => saveProvider({ model: e.target.value }) })),
-          h("button", { class: "r-row r-row-action", type: "button", text: "Test connection", onclick: () => app.testConnection() }))
+          test),
+        result
       ];
     },
 
-    answering() {
+    style() {
       const settings = Settings.load();
+      const current = SETUP_PRESETS.find(preset => Object.entries(preset.patch).every(([key, value]) => settings[key] === value))?.id;
       return [
-        h("h2", { text: "How should it answer?" }),
-        h("p", { text: "Pick how hands-on Rain is. Off means it only explains in the chat." }),
+        h("h2", { text: "How should it help?" }),
+        h("p", { text: "Pick a starting point. Each part can be changed on its own later." }),
+        choice("Style", SETUP_PRESETS, current, id => {
+          save(SETUP_PRESETS.find(preset => preset.id === id).patch);
+          go(step);
+        }),
+        settings.autoFill && UI.section("Wrong answers on purpose", null,
+          h("div", { class: "r-row" }, UI.segmented("Accuracy", ACCURACY_MODES, settings.accuracyMode, accuracyMode => save({ accuracyMode }), true)))
+      ];
+    },
+
+    look() {
+      const settings = Settings.load();
+      const swatches = CONFIG.ui.accents.map(accent => h("button", {
+        class: "r-swatch",
+        type: "button",
+        role: "radio",
+        "aria-label": accent.id,
+        "aria-checked": String(settings.accent === accent.id),
+        style: `--c:${app.scheme() === "dark" ? accent.dark : accent.light}`,
+        onclick: e => {
+          swatches.forEach(swatch => swatch.setAttribute("aria-checked", String(swatch === e.currentTarget)));
+          Sounds.play("tick");
+          save({ accent: accent.id });
+        }
+      }));
+      const look = settings.look;
+      return [
+        h("h2", { text: "Make it yours" }),
+        h("p", { text: "Changes show right away." }),
         UI.section(null, null,
-          UI.row("Enter answers on the page", UI.switch("Enter answers", settings.autoFill, value => {
-            save({ autoFill: value, ...(value ? {} : { autoSubmit: false }) });
-            go(step);
-          }), "Types, clicks and drags the answer in for you"),
-          settings.autoFill && UI.row("Submit automatically", UI.switch("Submit automatically", settings.autoSubmit, value => save({ autoSubmit: value })), "Presses Submit or Next once the answer is in"),
-          settings.autoFill && UI.stack("Replies", UI.segmented("Replies", [["explain", "Explain"], ["quiet", "Answer only"]], settings.replyStyle, replyStyle => save({ replyStyle }), true)))
+          h("div", { class: "r-row" }, UI.segmented("Theme", [["light", "Light"], ["dark", "Dark"], ["system", "Match system"]], settings.theme, theme => save({ theme }), true)),
+          UI.stack("Accent", h("div", { class: "r-swatches", role: "radiogroup", "aria-label": "Accent" }, swatches)),
+          UI.line("Panel size", UI.segmented("Panel size", [["compact", "S"], ["regular", "M"], ["large", "L"]], look.size, size => save({ look: { ...Settings.load().look, size } }))),
+          UI.row("Sounds", UI.switch("Sounds", settings.sounds, value => save({ sounds: value }))))
       ];
     },
 
@@ -5498,15 +6158,16 @@ function createSetup(app) {
       const settings = Settings.load();
       const row = (combo, text) => combo ? [h("dt", {}, Keys.parts(combo).map(part => h("kbd", { text: part }))), h("dd", { text })] : [];
       return [
-        h("h2", { text: "You're set" }),
-        h("p", { text: "Open a question and press Answer, or turn on Auto in the top bar. These shortcuts work anywhere on the page, even while Rain is hidden." }),
+        h("h2", { text: "Shortcuts and panic" }),
+        h("p", { text: "These work anywhere on the page, even while Rain is hidden." }),
         h("dl", { class: "r-keys r-setup-keys" },
           row(settings.keys.toggle, "show or hide Rain"),
           row(settings.keys.answer, "answer this question"),
           row(settings.keys.auto, "Auto Answer on or off"),
-          row(settings.keys.pick, "pick the question area")),
-        UI.section(null, "Change shortcuts any time in Settings, Keys.",
-          UI.row("Open Rain when a page loads", UI.switch("Open on load", settings.openOnStart, value => save({ openOnStart: value }))))
+          row(settings.keys.panic, "panic")),
+        UI.section("When you press panic", null,
+          h("div", { class: "r-row" }, UI.segmented("Panic action", [["hide", "Hide"], ["unload", "Unload"], ["leave", "Leave page"]], settings.panicAction, panicAction => save({ panicAction }), true)),
+          UI.row("Stealth mode", UI.switch("Stealth mode", settings.stealth, value => save({ stealth: value })), "No pill, no launcher, starts hidden"))
       ];
     }
   };
@@ -5514,7 +6175,7 @@ function createSetup(app) {
   function refreshNext() {
     const last = step === steps.length - 1;
     next.textContent = step === 0 ? "Get started" : last ? "Start using Rain" : "Continue";
-    next.disabled = steps[step] === "provider" && !Settings.ready();
+    next.disabled = steps[step] === "connect" && !Settings.ready();
   }
 
   function go(index) {
@@ -5523,7 +6184,8 @@ function createSetup(app) {
     body.dataset.dir = forward ? "next" : "back";
     body.replaceChildren(h("div", { class: "r-setup-page" }, pages[steps[step]]()));
     back.hidden = step === 0;
-    [...dots.children].forEach((dot, i) => dot.dataset.on = String(i <= step));
+    counter.textContent = `${step + 1} of ${steps.length}`;
+    progress.style.setProperty("--p", String((step + 1) / steps.length));
     refreshNext();
   }
 
@@ -5541,6 +6203,7 @@ function createSetup(app) {
   return {
     el,
     open() {
+      tested = null;
       go(0);
     }
   };
@@ -5566,26 +6229,38 @@ function createPanel(app) {
   let composeMode = "chat";
   let view = "main";
   let thinking = null;
+  let attachments = [];
 
-  const siteText = h("span", { class: "r-brand-site" });
+  const siteText = h("span", { class: "r-sub-site" });
+  const activity = h("span", { class: "r-sub-activity" });
   const privateTag = h("span", { class: "r-tag", text: "Private", title: "This chat is not saved", hidden: true });
+  const modelText = h("span");
+  const modelButton = h("button", { class: "r-model-btn", type: "button", title: "Switch model", "aria-haspopup": "menu", onclick: () => toggleModelMenu() },
+    modelText, icon("down"));
+  const chatsButton = UI.iconButton("chats", "Chats", () => showView(view === "chats" ? "main" : "chats"));
+  const settingsButton = UI.iconButton("gear", "Settings", () => showView(view === "settings" ? "main" : "settings"));
   const head = h("header", { class: "r-head" },
-    h("div", { class: "r-brand" }, h("b", { text: CONFIG.name }), h("span", { class: "r-brand-sep", text: "|" }), siteText),
-    privateTag,
-    UI.iconButton("chats", "Chats", () => showView(view === "chats" ? "main" : "chats")),
-    UI.iconButton("gear", "Settings", () => showView(view === "settings" ? "main" : "settings")),
-    UI.iconButton("hide", "Hide", () => setOpen(false)));
+    h("div", { class: "r-title" },
+      h("div", { class: "r-title-row" }, h("b", { text: CONFIG.name }), privateTag),
+      h("div", { class: "r-sub" }, siteText, activity)),
+    modelButton,
+    h("div", { class: "r-head-tools" }, chatsButton, settingsButton, UI.iconButton("hide", "Hide", () => setOpen(false))));
 
   const autoButton = h("button", { class: "r-chip r-auto", type: "button", "aria-pressed": "false", "data-act": "auto", onclick: () => app.toggleAuto() },
     h("span", { class: "r-mini-switch", "aria-hidden": "true" }), h("span", { text: "Auto" }));
   const autoCount = h("span", { class: "r-count", hidden: true });
   const areaText = h("span", { text: "Area" });
   const areaButton = h("button", { class: "r-chip", type: "button", title: "Pick the part of the page Rain reads", onclick: () => app.pick() }, icon("scope"), areaText);
-  const modelText = h("span");
-  const modelButton = h("button", { class: "r-chip r-chip-model", type: "button", title: "Change the model", onclick: () => showView("settings", "model") }, modelText);
+  const newButton = h("button", { class: "r-chip r-chip-quiet", type: "button", title: "Start a new chat", onclick: () => app.newChat(Settings.load().privateMode) }, icon("plus"), h("span", { text: "New chat" }));
+  const toolbar = h("div", { class: "r-bar" }, autoButton, autoCount, areaButton, h("span", { class: "r-bar-gap" }), newButton);
 
   const log = h("div", { class: "r-log", role: "log", "aria-label": "Conversation" });
 
+  const fileInput = h("input", { type: "file", accept: "image/*", multiple: true, hidden: true, onchange: e => {
+    addFiles([...e.target.files]);
+    e.target.value = "";
+  } });
+  const tray = h("div", { class: "r-tray", hidden: true });
   const input = h("textarea", {
     class: "r-input",
     rows: 1,
@@ -5600,40 +6275,77 @@ function createPanel(app) {
         setComposeMode("chat");
       }
     },
-    oninput: () => autosize()
+    oninput: () => autosize(),
+    onpaste: e => {
+      const files = [...(e.clipboardData?.files || [])].filter(file => file.type.startsWith("image/"));
+      if (!files.length) return;
+      e.preventDefault();
+      addFiles(files);
+    }
   });
   const modeChip = h("button", { class: "r-mode", type: "button", hidden: true, title: "Back to chat", onclick: () => setComposeMode("chat") },
     h("span", { text: "Check" }), icon("xmark"));
+  const attachButton = h("button", { class: "r-attach", type: "button", title: "Attach an image", "aria-label": "Attach an image", onclick: () => fileInput.click() }, icon("clip"));
   const sendButton = h("button", { class: "r-send", type: "button", title: "Send", "aria-label": "Send", "data-empty": "true", onclick: () => busy ? app.stop() : submit(composeMode) },
     icon("arrowUp"));
 
   const hintBadge = h("span", { class: "r-badge", hidden: true });
-  const hintButton = h("button", { class: "r-act", type: "button", "data-act": "hint", onclick: () => submit("hint") }, h("span", { text: "Hint" }), hintBadge);
   const actions = [
     h("button", { class: "r-act", type: "button", text: "Explain", "data-act": "explain", onclick: () => submit("explain") }),
-    hintButton,
+    h("button", { class: "r-act", type: "button", "data-act": "hint", onclick: () => submit("hint") }, h("span", { text: "Hint" }), hintBadge),
     h("button", { class: "r-act", type: "button", text: "Check", "data-act": "check", onclick: () => startCheck() }),
     h("button", { class: "r-act r-act-primary", type: "button", text: "Answer", "data-act": "answer", onclick: () => submit("choice") })
   ];
+  const actionRow = h("div", { class: "r-actions" }, actions);
 
   const mainView = h("section", { class: "r-view r-view-main", "data-active": "true" },
-    h("div", { class: "r-bar" }, autoButton, areaButton, autoCount, modelButton),
+    toolbar,
     log,
     h("footer", { class: "r-foot" },
-      h("div", { class: "r-actions" }, actions),
-      h("div", { class: "r-compose" }, modeChip, input, sendButton)));
+      actionRow,
+      tray,
+      h("div", { class: "r-compose" }, attachButton, modeChip, input, sendButton, fileInput)));
+
+  const menu = h("div", { class: "r-menu", role: "menu", hidden: true });
+  const scrim = h("div", { class: "r-scrim", hidden: true, onclick: () => closeModelMenu() });
+  const dropHint = h("div", { class: "r-drop", hidden: true }, icon("image"), h("span", { text: "Drop images to attach" }));
 
   const views = { main: mainView, chats: chatList.el, settings: settingsView.el, setup: setupView.el };
   const panel = h("div", { class: "r-panel", role: "region", "aria-label": CONFIG.name, "data-open": "false" },
     head,
-    h("div", { class: "r-views" }, mainView, chatList.el, settingsView.el, setupView.el));
+    h("div", { class: "r-views" }, mainView, chatList.el, settingsView.el, setupView.el),
+    scrim, menu, dropHint);
   const launcher = h("button", { class: "r-launcher", type: "button", hidden: true, title: `Open ${CONFIG.name}` }, h("i"), h("span", { text: CONFIG.name }));
   root.append(panel, launcher);
 
   function autosize() {
     input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
-    sendButton.dataset.empty = String(!input.value.trim());
+    input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
+    sendButton.dataset.empty = String(!input.value.trim() && !attachments.length);
+  }
+
+  async function addFiles(files) {
+    for (const file of files.filter(file => file.type.startsWith("image/")).slice(0, 4 - attachments.length)) {
+      try {
+        attachments.push(await imageFromFile(file));
+      } catch (err) {
+        island.show(err.message || "That image couldn't be read", { tone: "error" });
+      }
+    }
+    renderTray();
+    autosize();
+    input.focus({ preventScroll: true });
+  }
+
+  function renderTray() {
+    tray.hidden = !attachments.length;
+    tray.replaceChildren(...attachments.map((item, i) => h("div", { class: "r-thumb" },
+      h("img", { src: item.thumb, alt: "" }),
+      h("button", { type: "button", title: "Remove", "aria-label": "Remove image", onclick: () => {
+        attachments.splice(i, 1);
+        renderTray();
+        autosize();
+      } }, icon("xmark")))));
   }
 
   function setComposeMode(mode) {
@@ -5651,26 +6363,90 @@ function createPanel(app) {
   function submit(mode) {
     if (busy) return;
     const text = input.value.trim();
-    if ((mode === "chat" || mode === "check") && !text) {
+    const images = attachments;
+    if (mode === "check" && !text) {
       input.focus();
-      island.show(mode === "check" ? "Type your answer first" : "Type a question first");
+      island.show("Type your answer first");
       return;
     }
-    if (mode === "chat" || mode === "check") {
-      input.value = "";
-      autosize();
-      if (mode === "check") setComposeMode("chat");
+    if (mode === "chat" && !text && !images.length) {
+      input.focus();
+      island.show("Type a question first");
+      return;
     }
+    input.value = "";
+    attachments = [];
+    renderTray();
+    autosize();
+    if (mode === "check") setComposeMode("chat");
     Sounds.play("send");
-    app.ask(mode, text);
+    app.ask(mode, text, undefined, images);
+  }
+
+  function modelRows() {
+    const settings = Settings.load();
+    const current = Settings.provider(settings);
+    return CONFIG.providers.filter(spec => settings.providers[spec.id].apiKey.trim()).map(spec => {
+      const own = settings.providers[spec.id];
+      const ready = true;
+      const ids = [...spec.models.map(model => model.id), own.model, ...settings.recentModels.filter(entry => entry.provider === spec.id).map(entry => entry.model)]
+        .map(id => String(id || "").trim()).filter((id, i, all) => id && all.indexOf(id) === i);
+      const label = id => spec.models.find(model => model.id === id)?.label || id;
+      return h("div", { class: "r-menu-group" },
+        h("div", { class: "r-menu-head" }, h("span", { text: spec.id === "openai" ? "OpenAI compatible" : spec.label }), !ready && h("em", { text: "No key" })),
+        ids.map(id => h("button", {
+          class: "r-menu-item",
+          type: "button",
+          role: "menuitemradio",
+          "aria-checked": String(current.id === spec.id && current.model === id),
+          onclick: () => {
+            closeModelMenu();
+            if (!ready) {
+              Settings.save({ provider: spec.id });
+              showView("settings", "model");
+              island.show(`Add a ${spec.label} key to use ${label(id)}`);
+              return;
+            }
+            app.switchModel(spec.id, id);
+          }
+        }, h("span", { text: label(id) }), icon("check"))));
+    });
+  }
+
+  function toggleModelMenu() {
+    if (!menu.hidden) return closeModelMenu();
+    const settings = Settings.load();
+    const provider = Settings.provider(settings);
+    menu.replaceChildren(
+      h("div", { class: "r-menu-scroll" }, modelRows()),
+      provider.spec.efforts && h("div", { class: "r-menu-foot" }, h("span", { text: "Effort" }),
+        UI.segmented("Effort", CONFIG.efforts.map(effort => [effort, effort[0].toUpperCase() + effort.slice(1)]), settings.effort, effort => {
+          app.settingsChanged(Settings.save({ effort }));
+        })),
+      h("button", { class: "r-menu-link", type: "button", text: "Model settings", onclick: () => {
+        closeModelMenu();
+        showView("settings", "model");
+      } }));
+    menu.hidden = false;
+    scrim.hidden = false;
+    modelButton.setAttribute("aria-expanded", "true");
+  }
+
+  function closeModelMenu() {
+    menu.hidden = true;
+    scrim.hidden = true;
+    modelButton.setAttribute("aria-expanded", "false");
   }
 
   function showView(name, tab) {
     if (name !== "main" && !isOpen()) setOpen(true);
     if (view === "settings" && name !== "settings") settingsView.close();
+    closeModelMenu();
     view = name;
     for (const [id, el] of Object.entries(views)) el.dataset.active = String(id === name);
     panel.dataset.setup = String(name === "setup");
+    chatsButton.setAttribute("aria-pressed", String(name === "chats"));
+    settingsButton.setAttribute("aria-pressed", String(name === "settings"));
     if (name === "setup") {
       app.cancelFill();
       setupView.open();
@@ -5693,11 +6469,12 @@ function createPanel(app) {
     panel.dataset.open = String(open);
     Store.set("open", open);
     updateLauncher();
+    closeModelMenu();
     if (!quiet) Sounds.play(open ? "open" : "close");
     if (open) {
       clampPosition();
       setTimeout(() => input.focus({ preventScroll: true }), 60);
-    } else if (!quiet) {
+    } else if (!quiet && !Settings.load().stealth) {
       island.show([h("b", { text: CONFIG.name }), " hidden, press ", ...Keys.parts(Settings.load().keys.toggle).map(part => h("kbd", { text: part }))], {
         click: () => setOpen(true),
         duration: 2600
@@ -5706,15 +6483,16 @@ function createPanel(app) {
   }
 
   function updateLauncher() {
-    launcher.hidden = isOpen() || !Settings.load().launcher;
+    const settings = Settings.load();
+    launcher.hidden = isOpen() || !settings.launcher || settings.stealth;
   }
 
   function scrollDown() {
     log.scrollTop = log.scrollHeight;
   }
 
-  function copyButton(text, className = "r-icon-btn r-msg-copy") {
-    const button = h("button", { class: className, type: "button", title: "Copy", "aria-label": "Copy" }, icon("copy"));
+  function copyButton(text) {
+    const button = h("button", { class: "r-tool", type: "button", title: "Copy", "aria-label": "Copy" }, icon("copy"));
     button.addEventListener("click", async () => {
       try {
         await copyText(text);
@@ -5732,13 +6510,26 @@ function createPanel(app) {
     return button;
   }
 
-  function entryNode({ role, text, at }) {
-    if (role === "you") return h("div", { class: "r-msg r-you" }, h("div", { class: "r-body", text }));
-    if (role === "rain") return h("div", { class: "r-msg r-rain" }, h("div", { class: "r-body" }, renderMarkdown(text)), copyButton(text));
-    if (role === "answer") {
-      return h("div", { class: "r-msg r-answer" },
-        h("div", { class: "r-answer-head" }, h("span", { text: "Answer" }), copyButton(text, "r-icon-btn")),
-        h("div", { class: "r-body" }, renderMarkdown(text)));
+  function stamp(at) {
+    return Settings.load().look.times ? h("time", { class: "r-time", text: timeLabel(at) }) : null;
+  }
+
+  function entryNode({ role, text, at, images }) {
+    if (role === "you") {
+      return h("div", { class: "r-msg r-you" },
+        images?.length ? h("div", { class: "r-you-images" }, images.map(src => h("img", { src, alt: "Attached image" }))) : null,
+        text && h("div", { class: "r-bubble" }, h("div", { class: "r-body", text })),
+        stamp(at));
+    }
+    if (role === "rain" || role === "answer") {
+      return h("div", { class: `r-msg r-ai${role === "answer" ? " r-ai-answer" : ""}` },
+        h("div", { class: "r-bubble" },
+          role === "answer" && h("div", { class: "r-answer-label", text: "Answer" }),
+          h("div", { class: "r-body" }, renderMarkdown(text))),
+        h("div", { class: "r-tools" },
+          copyButton(text),
+          h("button", { class: "r-tool r-retry", type: "button", title: "Ask again", "aria-label": "Ask again", onclick: () => app.retry() }, icon("refresh")),
+          stamp(at)));
     }
     if (role === "action") return h("div", { class: "r-msg r-action" }, icon("check"), h("span", { text }));
     if (role === "error") return h("div", { class: "r-msg r-error" }, icon("warn"), h("div", { text }));
@@ -5746,16 +6537,23 @@ function createPanel(app) {
     return h("div", { class: "r-msg r-note", text });
   }
 
+  function markLatest() {
+    const replies = log.querySelectorAll(".r-ai");
+    replies.forEach((node, i) => { node.dataset.latest = String(i === replies.length - 1); });
+  }
+
   function emptyState() {
     const keys = Settings.load().keys;
+    const site = Question.site();
     const row = (combo, text) => combo ? [h("dt", {}, Keys.parts(combo).map(part => h("kbd", { text: part }))), h("dd", { text })] : [];
     return h("div", { class: "r-empty" },
-      h("h2", { text: "Open a question, then press Answer" }),
-      h("p", { text: "Rain reads the question area of the page. If it reads the wrong part, press Area and click the question." }),
+      h("h2", { text: site.id === "generic" ? "Open a question to start" : `Ready on ${site.label}` }),
+      h("p", { text: "Press Answer on any question, or ask about it below. Paste or drop a screenshot to ask about an image." }),
       h("dl", { class: "r-keys" },
-        row(keys.toggle, "show or hide"),
         row(keys.answer, "answer this question"),
-        row(keys.auto, "Auto Answer on or off")));
+        row(keys.auto, "Auto Answer on or off"),
+        row(keys.toggle, "show or hide"),
+        row(keys.panic, "panic")));
   }
 
   function renderChat(chat) {
@@ -5763,6 +6561,7 @@ function createPanel(app) {
     for (const node of log.children) node.style.animation = "none";
     if (thinking) log.append(thinking);
     privateTag.hidden = !chat.private;
+    markLatest();
     setHints(chat.hints);
     scrollDown();
   }
@@ -5774,11 +6573,24 @@ function createPanel(app) {
 
   function applyAppearance(settings = Settings.load()) {
     const accent = CONFIG.ui.accents.find(entry => entry.id === settings.accent) || CONFIG.ui.accents[0];
+    const look = settings.look;
+    const [width, height] = CONFIG.ui.sizes[look.size] || CONFIG.ui.sizes.regular;
     root.dataset.scheme = scheme(settings);
     root.dataset.density = settings.density;
     root.dataset.solid = String(Boolean(settings.reduceTransparency));
+    root.dataset.bubbles = String(look.bubbles);
     root.style.setProperty("--accent-dark", accent.dark);
     root.style.setProperty("--accent-light", accent.light);
+    root.style.setProperty("--panel-w", `${width}px`);
+    root.style.setProperty("--panel-h", `${height}px`);
+    root.style.setProperty("--size", `${look.text}px`);
+    root.style.setProperty("--glass-a", String(Math.min(1, Math.max(.5, look.glass / 100))));
+    autoButton.hidden = !look.toolbar.auto;
+    areaButton.hidden = !look.toolbar.area;
+    newButton.hidden = !look.toolbar.newChat;
+    modelButton.hidden = !look.toolbar.model;
+    toolbar.hidden = !look.toolbar.auto && !look.toolbar.area && !look.toolbar.newChat;
+    actionRow.hidden = !look.actions;
     updateLauncher();
   }
 
@@ -5797,6 +6609,11 @@ function createPanel(app) {
   function clampPosition() {
     const saved = Store.get("position", null);
     if (saved) place(saved.left, saved.top);
+  }
+
+  function resetPosition() {
+    Store.set("position", null);
+    Object.assign(panel.style, { left: "", top: "", right: "", bottom: "" });
   }
 
   function makeDraggable() {
@@ -5826,20 +6643,47 @@ function createPanel(app) {
     head.addEventListener("pointerup", end);
     head.addEventListener("pointercancel", end);
     head.addEventListener("dblclick", e => {
-      if (e.target.closest("button")) return;
-      Store.set("position", null);
-      Object.assign(panel.style, { left: "", top: "", right: "", bottom: "" });
+      if (!e.target.closest("button")) resetPosition();
+    });
+  }
+
+  function watchDrops() {
+    let depth = 0;
+    const hasImages = e => [...(e.dataTransfer?.items || [])].some(item => item.kind === "file" && item.type.startsWith("image/"));
+    panel.addEventListener("dragenter", e => {
+      if (!hasImages(e)) return;
+      e.preventDefault();
+      depth++;
+      dropHint.hidden = false;
+    });
+    panel.addEventListener("dragover", e => {
+      if (hasImages(e)) e.preventDefault();
+    });
+    panel.addEventListener("dragleave", () => {
+      depth = Math.max(0, depth - 1);
+      if (!depth) dropHint.hidden = true;
+    });
+    panel.addEventListener("drop", e => {
+      if (!hasImages(e)) return;
+      e.preventDefault();
+      depth = 0;
+      dropHint.hidden = true;
+      if (view !== "main") showView("main");
+      addFiles([...e.dataTransfer.files]);
     });
   }
 
   const onScheme = () => applyAppearance();
   launcher.addEventListener("click", () => setOpen(true));
   host.addEventListener("keydown", e => {
-    if (e.key === "Escape" && view !== "main") showView("main");
+    if (e.key !== "Escape") return;
+    if (!menu.hidden) closeModelMenu();
+    else if (view !== "main" && view !== "setup") showView("main");
   });
   window.addEventListener("resize", clampPosition);
   systemDark.addEventListener("change", onScheme);
   makeDraggable();
+  watchDrops();
   applyAppearance();
 
   return {
@@ -5875,6 +6719,7 @@ function createPanel(app) {
     view: () => view,
     scheme,
     applyAppearance,
+    resetPosition,
     renderChat,
     setHints,
     refreshChats() {
@@ -5891,6 +6736,7 @@ function createPanel(app) {
       launcher.dataset.auto = String(enabled);
       autoCount.hidden = !enabled || !count;
       autoCount.textContent = `${count} done`;
+      activity.textContent = enabled ? "Auto Answer on" : "";
     },
 
     setSite(label, pinned) {
@@ -5900,7 +6746,8 @@ function createPanel(app) {
     },
 
     setModel(label) {
-      modelText.textContent = label;
+      modelText.textContent = label.replace(/^Claude /, "");
+      modelButton.title = `Model: ${label}`;
     },
 
     setPrivate(isPrivate) {
@@ -5910,6 +6757,7 @@ function createPanel(app) {
     log(entry) {
       log.querySelector(".r-empty")?.remove();
       log.insertBefore(entryNode(entry), thinking);
+      markLatest();
       scrollDown();
     },
 
@@ -5920,7 +6768,8 @@ function createPanel(app) {
 
     setBusy(value, text = "Thinking") {
       busy = value;
-      [...actions, autoButton, areaButton].forEach(button => { button.disabled = value; });
+      [...actions, autoButton, areaButton, newButton, modelButton].forEach(button => { button.disabled = value; });
+      panel.dataset.busy = String(value);
       sendButton.dataset.stop = String(value);
       sendButton.title = value ? "Stop" : "Send";
       sendButton.setAttribute("aria-label", sendButton.title);
@@ -5962,8 +6811,11 @@ function createApp() {
   let chat = Chats.create(Question.site().label);
   const answered = new Set();
 
-  const say = (role, text) => {
-    const entry = { role, text, at: Date.now() };
+  let lastAsk = null;
+  let teardown = () => {};
+
+  const say = (role, text, extra = {}) => {
+    const entry = { role, text, at: Date.now(), ...extra };
     chat.log.push(entry);
     panel.log(entry);
   };
@@ -6153,9 +7005,11 @@ function createApp() {
 
     chat: () => chat,
 
-    async ask(mode, input, expectedKey) {
+    async ask(mode, input, expectedKey, attachments = []) {
       if (busy || picking) return;
       const automatic = mode === "answer";
+      if (!automatic) lastAsk = { mode, input, attachments };
+      if (mode === "chat" && !input && attachments.length) input = "Look at the attached image and help me with it.";
       cancelFill();
 
       const settings = Settings.load();
@@ -6204,11 +7058,13 @@ function createApp() {
         const turn = quiet
           ? Prompts.quietTurn + (miss ? `\n\n${Prompts.miss}` : "")
           : Prompts.turn(mode, input, chat.hints) + enter + (miss ? `\n\n${Prompts.miss}` : "");
+        const attached = attachments.map(item => item.block);
+        const note = attached.length ? `\n\nThe student attached ${attached.length} image${attached.length > 1 ? "s" : ""} of their own.` : "";
         const content = fresh
-          ? [...question.images, { type: "text", text: `${Prompts.context(question)}\n\n---\n\n${turn}` }]
-          : [{ type: "text", text: turn }];
+          ? [...question.images, ...attached, { type: "text", text: `${Prompts.context(question)}\n\n---\n\n${turn}${note}` }]
+          : [...attached, { type: "text", text: turn + note }];
 
-        if (!quiet) say("you", label(mode, input));
+        if (!quiet) say("you", attachments.length && mode === "chat" && input.startsWith("Look at the attached image") ? "" : label(mode, input), attachments.length ? { images: attachments.map(item => item.thumb) } : {});
         const message = { role: "user", content };
         const messages = [...history(), message];
         status(`Thinking with ${model}`, { busy: true });
@@ -6284,7 +7140,7 @@ function createApp() {
       status("Click the question on the page");
       let el;
       try {
-        el = await pickElement();
+        el = await pickElement(Question.root()?.el);
       } finally {
         picking = false;
       }
@@ -6384,6 +7240,96 @@ function createApp() {
     },
 
     status,
+
+    retry() {
+      if (!lastAsk || busy) return;
+      app.ask(lastAsk.mode, lastAsk.input, undefined, lastAsk.attachments);
+    },
+
+    switchModel(providerId, model, quiet = false) {
+      const settings = Settings.load();
+      const recent = [{ provider: providerId, model }, ...settings.recentModels.filter(entry => entry.provider !== providerId || entry.model !== model)].slice(0, 8);
+      const next = Settings.save({
+        provider: providerId,
+        providers: { ...settings.providers, [providerId]: { ...settings.providers[providerId], model } },
+        recentModels: recent
+      });
+      app.settingsChanged(next);
+      if (!quiet) {
+        Sounds.play("tick");
+        status(`Switched to ${AI.label(next)}`, { tone: "ok" });
+      }
+    },
+
+    async checkConnection() {
+      const settings = Settings.load();
+      try {
+        const reply = await AI.send({ settings, system: "Reply with the single word: ok", messages: [{ role: "user", content: [{ type: "text", text: "ping" }] }] });
+        Stats.add(reply.usage);
+        Sounds.play("success");
+        return { ok: true, text: `${AI.label(settings)} is connected.` };
+      } catch (err) {
+        Sounds.play("error");
+        return { ok: false, text: err.message };
+      }
+    },
+
+    renameChat(id, title) {
+      if (id === chat.id) {
+        chat.title = title;
+        persist();
+      }
+      Chats.update(id, { title });
+      panel.refreshChats();
+    },
+
+    pinChat(id, pinned) {
+      if (id === chat.id) chat.pinned = pinned;
+      Chats.update(id, { pinned });
+      Sounds.play("tick");
+      panel.refreshChats();
+    },
+
+    rerender() {
+      panel.renderChat(chat);
+    },
+
+    resetPosition() {
+      panel.resetPosition();
+    },
+
+    resetSettings() {
+      const keep = Settings.load().providers;
+      Store.set("settings", { providers: keep });
+      const fresh = Settings.load();
+      app.settingsChanged(fresh);
+      Tweaks.apply(fresh);
+      panel.showView("settings");
+      status("Settings reset", { tone: "ok" });
+    },
+
+    applyStealth() {
+      const settings = Settings.load();
+      panel.updateLauncher();
+      if (settings.stealth) panel.island.hide();
+    },
+
+    panic() {
+      const settings = Settings.load();
+      if (auto) app.toggleAuto();
+      app.stop();
+      cancelFill();
+      if (settings.panicAction === "hide") {
+        panel.island.hide();
+        panel.setOpen(false, true);
+        Question.pin(null);
+        return;
+      }
+      teardown();
+      window.__rain = undefined;
+      if (settings.panicAction === "leave" && /^https?:\/\//i.test(settings.panicUrl || "")) location.replace(settings.panicUrl);
+    },
+
     finishSetup() {
       panel.showView("main");
       const parts = Keys.parts(Settings.load().keys.toggle);
@@ -6402,6 +7348,7 @@ function createApp() {
       else if (action === "auto") app.toggleAuto();
       else if (action === "answer") app.ask("choice");
       else if (action === "pick") app.pick();
+      else if (action === "panic") app.panic();
     }
   };
 
@@ -6415,7 +7362,7 @@ function createApp() {
   if (Settings.ready(settings)) Store.set("setup", true);
   const setup = !Store.get("setup", false);
   const open = Store.get("open", settings.openOnStart);
-  panel.boot(setup || (settings.openOnStart && open));
+  panel.boot(setup || (settings.openOnStart && open && !settings.stealth));
   if (setup) panel.showView("setup");
   const toggleParts = Keys.parts(settings.keys.toggle);
   if (setup) {
@@ -6485,21 +7432,23 @@ function createApp() {
     }
   }, 850);
 
+  teardown = () => {
+    auto = false;
+    cancelFill();
+    clearInterval(timer);
+    Chats.save(chat);
+    window.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("pagehide", onLeave);
+    document.removeEventListener("click", onClick, true);
+    unwatch();
+    Tweaks.clear();
+    panel.remove();
+  };
+
   return {
     version: CONFIG.version,
     show: () => panel.setOpen(true),
-    remove: () => {
-      auto = false;
-      cancelFill();
-      clearInterval(timer);
-      Chats.save(chat);
-      window.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("pagehide", onLeave);
-      document.removeEventListener("click", onClick, true);
-      unwatch();
-      Tweaks.clear();
-      panel.remove();
-    }
+    remove: () => teardown()
   };
 }
 

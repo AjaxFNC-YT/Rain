@@ -8,9 +8,12 @@ const STYLE_TOKENS = `
   --med: 220ms;
   --slow: 320ms;
   --ease: cubic-bezier(.2, .7, .2, 1);
+  --spring: cubic-bezier(.32, .72, 0, 1);
+  --pop: cubic-bezier(.34, 1.3, .64, 1);
+  --sheet: 420ms;
   --r-sm: 8px;
   --r: 12px;
-  --r-lg: 24px;
+  --r-lg: 26px;
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
   --size: 14px;
@@ -26,7 +29,7 @@ const STYLE_TOKENS = `
   color-scheme: dark;
   --accent: var(--accent-dark);
   --on-accent: #fff;
-  --glass: rgba(28, 29, 33, .88);
+  --glass: rgba(30, 31, 36, var(--glass-a, .82));
   --surface: #1c1d21;
   --group: rgba(255, 255, 255, .06);
   --fill: rgba(255, 255, 255, .08);
@@ -51,7 +54,7 @@ const STYLE_TOKENS = `
   color-scheme: light;
   --accent: var(--accent-light);
   --on-accent: #fff;
-  --glass: rgba(247, 247, 249, .8);
+  --glass: rgba(246, 246, 249, calc(var(--glass-a, .82) - .06));
   --surface: #f2f2f6;
   --group: rgba(255, 255, 255, .72);
   --fill: rgba(118, 118, 128, .12);
@@ -123,6 +126,13 @@ const STYLE_TOKENS = `
 }
 @keyframes r-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes r-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes r-pop { from { opacity: 0; transform: translateY(-6px) scale(.96); } to { opacity: 1; transform: none; } }
+@keyframes r-push-in { from { opacity: 0; transform: translateX(28px); } to { opacity: 1; transform: none; } }
+@keyframes r-push-out { from { opacity: 0; transform: translateX(-28px); } to { opacity: 1; transform: none; } }
+@keyframes r-rise { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes r-from-right { from { opacity: 0; transform: translateX(14px) scale(.96); transform-origin: 100% 100%; } to { opacity: 1; transform: none; } }
+@keyframes r-from-left { from { opacity: 0; transform: translateX(-10px) scale(.98); transform-origin: 0 100%; } to { opacity: 1; transform: none; } }
+@keyframes r-grow { from { opacity: 0; transform: scale(.7); } to { opacity: 1; transform: none; } }
 @keyframes r-drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 @keyframes r-drop {
   0% { transform: translateY(-18px) scale(.7); opacity: 0; }

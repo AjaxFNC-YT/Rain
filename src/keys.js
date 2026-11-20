@@ -24,7 +24,8 @@ const KEY_ACTIONS = [
   { id: "toggle", label: "Show or hide Rain", note: "Works while Rain is fully hidden" },
   { id: "answer", label: "Answer this question" },
   { id: "auto", label: "Turn Auto Answer on or off" },
-  { id: "pick", label: "Pick the question area" }
+  { id: "pick", label: "Pick the question area" },
+  { id: "panic", label: "Panic", note: "Runs the panic action from Hiding and panic" }
 ];
 
 const Keys = {

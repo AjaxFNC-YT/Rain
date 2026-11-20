@@ -56,10 +56,17 @@ const Chats = {
       title: chat.title,
       site: chat.site,
       updated: chat.updated,
+      pinned: Boolean(chat.pinned),
       count: chat.log.filter(entry => entry.role === "you").length
     });
     for (const old of index.splice(CONFIG.ui.maxChats)) Store.remove(`chat:${old.id}`);
     Store.set("chats", index);
+  },
+
+  update(id, patch) {
+    const stored = Store.get(`chat:${id}`, null);
+    if (stored) Store.set(`chat:${id}`, { ...stored, ...patch });
+    Store.set("chats", this.index().map(entry => entry.id === id ? { ...entry, ...patch } : entry));
   },
 
   remove(id) {
